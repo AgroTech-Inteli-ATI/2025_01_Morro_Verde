@@ -238,12 +238,27 @@ def inserir_dados_no_banco(dados):
         return cursor.lastrowid
 
     def get_or_create_produto(p):
-        cursor.execute("SELECT id FROM produtos WHERE nome_produto = ? AND formulacao = ? AND origem = ?", (p.get("nome_produto"), p.get("formulacao"), p.get("origem")))
-        res = cursor.fetchone()
-        if res: return res[0]
-        cursor.execute("""INSERT INTO produtos (nome_produto, formulacao, origem, tipo, unidade) VALUES (?, ?, ?, ?, ?)""",
-                       (p.get("nome_produto"), p.get("formulacao"), p.get("origem"), p.get("tipo"), p.get("unidade")))
+        if not isinstance(p, dict):
+            print("⚠️ Erro: produto inválido ->", p)
+            return None  # evita o erro e segue em frente
+
+        # O restante da função continua igual
+        cursor.execute("SELECT id FROM produtos WHERE nome_produto = ? AND formulacao = ? AND origem = ?", (
+            p.get("nome_produto"),
+            p.get("formulacao"),
+            p.get("origem")
+        ))
+        result = cursor.fetchone()
+        if result:
+            return result[0]
+
+        cursor.execute("INSERT INTO produtos (nome_produto, formulacao, origem) VALUES (?, ?, ?)", (
+            p.get("nome_produto"),
+            p.get("formulacao"),
+            p.get("origem")
+        ))
         return cursor.lastrowid
+
 
     for p in dados["produtos"]:
         get_or_create_produto(p)
