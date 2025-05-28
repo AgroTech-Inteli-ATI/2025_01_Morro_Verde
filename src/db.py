@@ -1,119 +1,105 @@
 import sqlite3
 
-def criar_tabelas():
-    conn = sqlite3.connect("morro_verde.db")
-    cursor = conn.cursor()
-    cursor.executescript("""
-        CREATE TABLE IF NOT EXISTS fertilizantes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nome TEXT NOT NULL,
-            preco TEXT NOT NULL,
-            fornecedor TEXT NOT NULL,
-            data_atualizacao DATE NOT NULL
-        );     
+# Conecta ou cria o banco morro_verde.db
+conn = sqlite3.connect("morro_verde.db")
+cursor = conn.cursor()
 
-        CREATE TABLE IF NOT EXISTS produto (
-            id_produto INTEGER PRIMARY KEY,
-            nome TEXT NOT NULL,
-            tipo TEXT NOT NULL
-        );
+# Tabela de produtos
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS produtos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nome_produto TEXT,
+    formulacao TEXT,
+    origem TEXT,
+    tipo TEXT,
+    unidade TEXT,
+    UNIQUE(nome_produto, formulacao, origem)
+)
+""")
 
-        CREATE TABLE IF NOT EXISTS localizacao (
-            id_localizacao INTEGER PRIMARY KEY,
-            nome TEXT NOT NULL,
-            tipo TEXT NOT NULL
-        );
+# Tabela de locais (portos, estados, países)
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS locais (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nome TEXT,
+    estado TEXT,
+    pais TEXT,
+    tipo TEXT
+)
+""")
 
-        CREATE TABLE IF NOT EXISTS preco (
-            id_preco INTEGER PRIMARY KEY,
-            id_produto INTEGER NOT NULL,
-            id_localizacao INTEGER NOT NULL,
-            data_preco DATE NOT NULL,
-            preco_usd TEXT,
-            preco_brl TEXT,
-            tipo_preco TEXT
-        );
+# Tabela de preços
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS precos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    produto_id INTEGER,
+    local_id INTEGER,
+    data TEXT,
+    tipo_preco TEXT,
+    modalidade TEXT,
+    fonte TEXT,
+    moeda TEXT,
+    preco_min REAL,
+    preco_max REAL,
+    variacao REAL,
+    simbolo_var TEXT,
+    FOREIGN KEY (produto_id) REFERENCES produtos(id),
+    FOREIGN KEY (local_id) REFERENCES locais(id)
+)
+""")
 
-        CREATE TABLE IF NOT EXISTS frete (
-            id_frete INTEGER PRIMARY KEY,
-            origem INTEGER NOT NULL,
-            destino INTEGER NOT NULL,
-            tipo_transporte TEXT NOT NULL,
-            preco_usd TEXT,
-            preco_brl TEXT,
-            data_frete DATE NOT NULL
-        );
+# Tabela de fretes
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS fretes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tipo TEXT,
+    origem_id INTEGER,
+    destino_id INTEGER,
+    data TEXT,
+    custo_usd REAL,
+    custo_brl REAL,
+    FOREIGN KEY (origem_id) REFERENCES locais(id),
+    FOREIGN KEY (destino_id) REFERENCES locais(id)
+)
+""")
 
-        CREATE TABLE IF NOT EXISTS barter (
-            id_barter INTEGER PRIMARY KEY,
-            cultura TEXT NOT NULL,
-            id_produto INTEGER NOT NULL,
-            estado TEXT NOT NULL,
-            preco_npk TEXT,
-            preco_cultura TEXT,
-            razao_barter TEXT,
-            data DATE NOT NULL
-        );
+# Tabela de razões de troca (barter)
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS barter_ratios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cultura TEXT,
+    produto_id INTEGER,
+    estado TEXT,
+    data TEXT,
+    preco_cultura REAL,
+    barter_ratio REAL,
+    barter_index REAL,
+    FOREIGN KEY (produto_id) REFERENCES produtos(id)
+)
+""")
 
-        CREATE TABLE IF NOT EXISTS acordos_barter (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            produtor_nome TEXT,
-            cpf_cnpj TEXT,
-            insumo_fornecido TEXT,
-            quantidade_insumo REAL,
-            unidade_insumo TEXT,
-            valor_estimado REAL,
-            cultura_destinada TEXT,
-            producao_estimativa_tons REAL,
-            data_contrato DATE,
-            data_entrega_prevista DATE,
-            status_contrato TEXT
-        );
+# Tabela de câmbio
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS cambio (
+    data TEXT PRIMARY KEY,
+    usd_brl REAL
+)
+""")
 
-        CREATE TABLE IF NOT EXISTS produtores (
-            id INTEGER PRIMARY KEY,
-            nome TEXT NOT NULL
-        );
-    """)
-    conn.commit()
-    conn.close()
+# Tabela de custos portuários
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS custos_portos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    porto_id INTEGER,
+    data TEXT,
+    armazenagem REAL,
+    demurrage REAL,
+    custo_total REAL,
+    FOREIGN KEY (porto_id) REFERENCES locais(id)
+)
+""")
 
-   
+conn.commit()
+conn.close()
 
-def inserir_fertilizante(nome, preco, fornecedor, data):
-    conn = sqlite3.connect("morro_verde.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO fertilizantes (nome, preco, fornecedor, data_atualizacao)
-        VALUES (?, ?, ?, ?)
-    """, (nome, preco, fornecedor, data))
-    conn.commit()
-    conn.close()
-
-
-def consultar_fertilizantes():
-    """
-    Retorna uma lista de todos os fertilizantes cadastrados.
-    """
-    conn = sqlite3.connect("morro_verde.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM fertilizantes")
-    resultados = cursor.fetchall()
-    conn.close()
-    return resultados
-
-def filtrar_fertilizantes(filtro):
-    conn = sqlite3.connect("morro_verde.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM fertilizantes WHERE nome LIKE ?", ('%' + filtro + '%',))
-    resultados = cursor.fetchall()
-    conn.close()
-    return resultados
-
-def consultar_frete():
-    conn = sqlite3.connect("morro_verde.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM frete")
-    resultados = cursor.fetchall()
-    conn.close()
-    return resultados
+print("✅ Banco de dados 'morro_verde.db' criado com sucesso!")
