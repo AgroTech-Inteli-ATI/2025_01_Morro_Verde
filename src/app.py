@@ -206,82 +206,30 @@ fig_disp = px.scatter(
 fig_disp.update_layout(margin=dict(t=50, b=20))
 st.plotly_chart(fig_disp, use_container_width=True)
 
-# Preço médio por localização
-st.subheader("📊 Preço Médio por Localização")
-preco_medio_local = df_precos_filt.groupby('localizacao')['preco'].mean().reset_index()
-fig_bar = px.bar(preco_medio_local, x='localizacao', y='preco', title='Preço Médio por Localização', text_auto=True)
-st.plotly_chart(fig_bar, use_container_width=True)
+# Variação de Preço ao Longo do Tempo por Local
+st.subheader("📈 Variação de Preço ao Longo do Tempo por Localização")
+
+# Agrupar por data e local, calculando a média de preço
+preco_por_local_data = df_precos_filt.groupby(['data_preco', 'localizacao'])['preco'].mean().reset_index()
+
+# Criar o gráfico de linha
+fig_linha_local = px.line(
+    preco_por_local_data,
+    x='data_preco',
+    y='preco',
+    color='localizacao',
+    markers=True,
+    title='Evolução do Preço por Localização ao Longo do Tempo'
+)
+
+fig_linha_local.update_layout(margin=dict(t=50, b=20))
+st.plotly_chart(fig_linha_local, use_container_width=True)
 
 # Distribuição preço médio por produto
 st.subheader("📊 Distribuição do Preço Médio por Produto")
 preco_medio_produto = df_precos_filt.groupby('produto')['preco'].mean().reset_index()
 fig_pie = px.pie(preco_medio_produto, names='produto', values='preco', title='Distribuição de Preço Médio por Produto')
 st.plotly_chart(fig_pie, use_container_width=True)
-
-# Comparativo Permuta
-st.subheader("📉 Comparativo Permuta")
-culturas_disponiveis = df_barter['cultura'].unique()
-cultura_selecionada = st.selectbox("Selecione a Cultura:", culturas_disponiveis)
-filtros_barter = df_barter[df_barter['cultura'] == cultura_selecionada]
-
-conn = criar_conexao()
-produtos_df = pd.read_sql_query("SELECT id, nome_produto FROM produtos", conn)
-conn.close()
-
-ids_usados = filtros_barter['produto_id'].unique()
-nomes_disponiveis = produtos_df[produtos_df['id'].isin(ids_usados)]['nome_produto'].tolist()
-fertilizante_selecionado = st.selectbox("Produto (Fertilizante):", nomes_disponiveis)
-
-if fertilizante_selecionado:
-    id_fertilizante = produtos_df[produtos_df['nome_produto'] == fertilizante_selecionado]['id'].values[0]
-    filtros_barter = filtros_barter[filtros_barter['produto_id'] == id_fertilizante]
-    fig_barter = px.line(
-        filtros_barter.sort_values("data"),
-        x="data",
-        y="razao_barter",
-        color="estado",
-        title=f"Permuta {fertilizante_selecionado} / {cultura_selecionada} - Razão ao longo do tempo"
-    )
-    st.plotly_chart(fig_barter, use_container_width=True)
-
-# Correlação entre preço e permuta
-st.subheader("📊 Correlação entre Preço e Razão de Permuta")
-
-try:
-    df_precos_bar = df_precos_filt.copy()
-    df_precos_bar['ano_mes'] = df_precos_bar['data_preco'].dt.to_period('M')
-    df_precos_bar = df_precos_bar.groupby(['produto', 'ano_mes', 'localizacao'])['preco'].mean().reset_index()
-    df_precos_bar['ano_mes'] = df_precos_bar['ano_mes'].dt.to_timestamp()
-
-    conn = criar_conexao()
-    produtos_df = pd.read_sql_query("SELECT id, nome_produto FROM produtos", conn)
-    conn.close()
-
-    df_precos_bar = df_precos_bar.merge(produtos_df, left_on='produto', right_on='nome_produto', how='left')
-
-    df_barter['ano_mes'] = df_barter['data'].dt.to_period('M')
-    df_barter_agrup = df_barter.groupby(['produto_id', 'ano_mes', 'estado'])['razao_barter'].mean().reset_index()
-    df_barter_agrup['ano_mes'] = df_barter_agrup['ano_mes'].dt.to_timestamp()
-
-    df_corr = pd.merge(
-        df_precos_bar,
-        df_barter_agrup,
-        left_on=['id', 'ano_mes', 'localizacao'],
-        right_on=['produto_id', 'ano_mes', 'estado'],
-        how='inner'
-    )
-
-    fig_corr = px.scatter(
-        df_corr,
-        x='preco',
-        y='razao_barter',
-        color='produto',
-        title="Correlação entre Preço e Razão de Permuta"
-    )
-    st.plotly_chart(fig_corr, use_container_width=True)
-
-except Exception as e:
-    st.warning(f"Não foi possível gerar gráfico de correlação: {e}")
 
 # Dashboard Fretes
 st.subheader("🚛 Análise Detalhada de Custos Logísticos (Fretes)")
@@ -301,21 +249,35 @@ if not df_fretes.empty:
 else:
     st.info("Nenhum dado de fretes disponível para exibir.")
 
-# Análise Sazonal
+# Análise Sazonal (com checagem de tamanho da série)
 st.subheader("📅 Análise Sazonal dos Preços")
 
 try:
     import statsmodels.api as sm
-    ts_data = df_precos_filt.groupby('data_preco')['preco'].mean()
-    ts_data.index = pd.to_datetime(ts_data.index)
 
-    decomposition = sm.tsa.seasonal_decompose(ts_data, model='additive', period=12)
-    fig_seasonal = go.Figure()
-    fig_seasonal.add_trace(go.Scatter(x=decomposition.seasonal.index, y=decomposition.seasonal.values, mode='lines', name='Sazonal'))
-    fig_seasonal.update_layout(title='Componente Sazonal dos Preços Médios', margin=dict(t=50, b=20))
-    st.plotly_chart(fig_seasonal, use_container_width=True)
+    ts_data = df_precos_filt.copy()
+    ts_data['ano_mes'] = ts_data['data_preco'].dt.to_period('M')
+    ts_data = ts_data.groupby('ano_mes')['preco'].mean()
+    ts_data = ts_data.dropna()
+    ts_data.index = ts_data.index.to_timestamp()
+
+    if len(ts_data) >= 24:
+        decomposition = sm.tsa.seasonal_decompose(ts_data, model='additive', period=12)
+        fig_seasonal = go.Figure()
+        fig_seasonal.add_trace(go.Scatter(
+            x=decomposition.seasonal.index,
+            y=decomposition.seasonal.values,
+            mode='lines',
+            name='Sazonal'
+        ))
+        fig_seasonal.update_layout(title='Componente Sazonal dos Preços Médios', margin=dict(t=50, b=20))
+        st.plotly_chart(fig_seasonal, use_container_width=True)
+    else:
+        st.info(f"A série temporal precisa de pelo menos 24 meses para análise sazonal. Atualmente possui {len(ts_data)}.")
+
 except Exception as e:
     st.warning(f"Erro na análise sazonal: {e}")
+
 
 # Alertas automáticos
 st.subheader("⚠️ Alertas Automáticos")
