@@ -47,23 +47,22 @@ st.set_page_config(page_title="Dashboard Morro Verde", layout="wide")
 
 
 # Função para processar relatório em uma thread separada
-def threaded_processar_relatorio(caminho_pdf):
+def threaded_processar_relatorio(caminho_pdf, num_partes):
     st.session_state.relatorio_em_processamento = True
     st.session_state.progresso_relatorio = 0
 
     def atualizar_progresso(p):
-        print(f"🔄 Progresso atualizado para: {p}%")
         st.session_state.progresso_relatorio = p
 
     try:
         processar_relatorio(
             caminho_pdf,
-            callback_progresso=atualizar_progresso
+            callback_progresso=atualizar_progresso,
+            num_partes=num_partes  # <- passe aqui
         )
     finally:
         st.session_state.relatorio_em_processamento = False
         st.session_state.progresso_relatorio = 100
-        print("✅ Processamento finalizado. Pronto para atualizar o dashboard manualmente.")
 
 
 # Sidebar
@@ -82,14 +81,16 @@ with col1:
     filtrar_click = st.button("🔍 FILTRAR DADOS")
 
 with col2:
+    num_partes = st.slider("Dividir relatório em quantas partes?", 1, 15, 10)
+
     uploaded_file = st.file_uploader("Selecione o arquivo PDF do relatório", type=["pdf"], key="upload")
     if st.button("📥 IMPORTAR RELATÓRIO") and uploaded_file is not None:
         caminho_pdf = "relatorios/relatorio_temp.pdf"
         with open(caminho_pdf, "wb") as f:
             f.write(uploaded_file.getbuffer())
 
-        # Inicia o processamento em uma thread
-        thread = threading.Thread(target=threaded_processar_relatorio, args=(caminho_pdf,))
+        # Inicia o processamento com número de partes ajustável
+        thread = threading.Thread(target=threaded_processar_relatorio, args=(caminho_pdf, num_partes))
         thread.start()
 
 with col3:
@@ -277,6 +278,7 @@ try:
 
 except Exception as e:
     st.warning(f"Erro na análise sazonal: {e}")
+
 
 
 # Alertas automáticos
