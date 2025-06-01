@@ -1,20 +1,41 @@
-
 import streamlit as st
-import sqlite3
 import pandas as pd
+import sqlite3
 import plotly.express as px
-from datetime import datetime, timedelta, date
-import io
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+from processar_relatorio import processar_relatorio
+import threading  
+import time        
+from streamlit_autorefresh import st_autorefresh
+from database_utils import salvar_preco_manual, salvar_frete_manual
 import os
-import PyPDF2  # Para manipulação de PDFs
+
+st.set_page_config(
+    page_title="Dashboard Morro Verde",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        'About': None,
+        'Get Help': None,
+        'Report a bug': None
+    }
+)
+
+# Esconde o seletor de páginas padrão
+hide_pages = """
+    <style>
+        [data-testid="stSidebarNav"] {
+            display: none;
+        }
+    </style>
+"""
+st.markdown(hide_pages, unsafe_allow_html=True)
+
 
 DB_PATH = 'morro_verde.db'
 logo_path = "img/logo-morro-verde.png"
-UPLOAD_FOLDER = "uploads"
 
-# Criar pasta de uploads se não existir
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
 
 def criar_conexao():
     conn = sqlite3.connect(DB_PATH)
@@ -23,627 +44,636 @@ def criar_conexao():
 
 def carregar_dados():
     conn = criar_conexao()
-    
-    # Carregar a estrutura de preços combinando as colunas de USD e BRL
     df_precos = pd.read_sql_query('''
-    SELECT 
-        p.nome AS produto, 
-        l.nome AS localizacao, 
-        pr.data_preco,
-        pr.preco,
-        pr.moeda
-    FROM preco pr
-    JOIN produto p ON p.id_produto = pr.id_produto
-    JOIN localizacao l ON l.id_localizacao = pr.id_localizacao
-''', conn)
+        SELECT p.nome_produto AS produto, l.nome AS localizacao, pr.data AS data_preco, pr.preco_min AS preco, pr.moeda
+        FROM precos pr
+        JOIN produtos p ON p.id = pr.produto_id
+        JOIN locais l ON l.id = pr.local_id
+    ''', conn)
 
-
-    # Carregar fretes da mesma forma
     df_fretes = pd.read_sql_query('''
-        SELECT 
-            l1.nome AS origem, 
-            l2.nome AS destino, 
-            f.tipo_transporte, 
-            CASE 
-                WHEN f.preco_usd IS NOT NULL THEN f.preco_usd
-                ELSE f.preco_brl
-            END AS preco,
-            CASE 
-                WHEN f.preco_usd IS NOT NULL THEN 'USD'
-                ELSE 'BRL'
-            END AS moeda,
-            f.data_frete
-        FROM frete f
-        JOIN localizacao l1 ON f.origem = l1.id_localizacao
-        JOIN localizacao l2 ON f.destino = l2.id_localizacao
+        SELECT l1.nome AS origem, l2.nome AS destino, f.tipo AS tipo_transporte, f.custo_usd AS preco, "USD" AS moeda, f.data
+        FROM fretes f
+        JOIN locais l1 ON f.origem_id = l1.id
+        JOIN locais l2 ON f.destino_id = l2.id
     ''', conn)
 
-    # Carregar dados de permuta (barter)
     df_barter = pd.read_sql_query('''
-        SELECT 
-            id_barter, 
-            cultura, 
-            id_produto, 
-            estado, 
-            preco_npk AS preco_fertilizante, 
-            preco_cultura, 
-            razao_barter, 
-            data
-        FROM barter
+        SELECT cultura, produto_id, estado, data, preco_cultura, barter_ratio AS razao_barter
+        FROM barter_ratios
     ''', conn)
-    
-    # Informações de referência
-    df_produtos = pd.read_sql_query("SELECT id_produto, nome, tipo FROM produto", conn)
-    df_localizacoes = pd.read_sql_query("SELECT id_localizacao, nome, tipo FROM localizacao", conn)
-    df_fertilizantes = pd.read_sql_query("SELECT id, nome, preco, fornecedor, data_atualizacao FROM fertilizantes", conn)
-    df_acordos = pd.read_sql_query("SELECT * FROM acordos_barter", conn)
-    df_produtores = pd.read_sql_query("SELECT id, nome FROM produtores", conn)
 
-    # Obter todas as tabelas do banco para o input de dados
-    cursor = conn.cursor()
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    tabelas = [row[0] for row in cursor.fetchall()]
-    
     conn.close()
-    
-    return df_precos, df_fretes, df_barter, df_produtos, df_localizacoes, df_fertilizantes, df_acordos, df_produtores, tabelas
+    return df_precos, df_fretes, df_barter
 
-# Função para salvar PDF
-def salvar_pdf(uploaded_file):
-    if not os.path.exists(UPLOAD_FOLDER):
-        os.makedirs(UPLOAD_FOLDER)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    file_path = os.path.join(UPLOAD_FOLDER, f"{timestamp}_{uploaded_file.name}")
-    
-    with open(file_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    
-    return file_path
 
-# Função para extrair texto de um PDF
-def extrair_texto_pdf(file_path):
-    texto = ""
-    try:
-        with open(file_path, 'rb') as file:
-            reader = PyPDF2.PdfReader(file)
-            num_paginas = len(reader.pages)
-            
-            for i in range(num_paginas):
-                pagina = reader.pages[i]
-                texto += pagina.extract_text()
-                
-    except Exception as e:
-        texto = f"Erro ao extrair texto: {str(e)}"
-    
-    return texto
-
-# Função para obter esquema da tabela
-def obter_esquema_tabela(tabela):
-    conn = criar_conexao()
-    cursor = conn.cursor()
-    
-    # Obter informações sobre as colunas da tabela
-    cursor.execute(f"PRAGMA table_info({tabela})")
-    colunas = cursor.fetchall()
-    
-    conn.close()
-    
-    # Formatar informações das colunas (cid, name, type, notnull, dflt_value, pk)
-    esquema = [{"nome": col[1], "tipo": col[2], "pk": col[5] == 1} for col in colunas]
-    return esquema
-
-# Função para inserir dados em uma tabela
-def inserir_dados(tabela, dados):
-    conn = criar_conexao()
-    cursor = conn.cursor()
-    
-    # Obter colunas da tabela excluindo a PK autoincrement
-    esquema = obter_esquema_tabela(tabela)
-    colunas = [col["nome"] for col in esquema if not col["pk"] or col["nome"] in dados.keys()]
-    
-    # Construir query de inserção
-    placeholders = ", ".join(["?" for _ in colunas])
-    query = f"INSERT INTO {tabela} ({', '.join(colunas)}) VALUES ({placeholders})"
-    
-    # Valores a serem inseridos
-    valores = [dados.get(col, None) for col in colunas]
-    
-    try:
-        cursor.execute(query, valores)
-        conn.commit()
-        sucesso = True
-        mensagem = "Dados inseridos com sucesso!"
-    except Exception as e:
-        conn.rollback()
-        sucesso = False
-        mensagem = f"Erro ao inserir dados: {str(e)}"
-    finally:
-        conn.close()
-    
-    return sucesso, mensagem
-
-# --- Layout da Interface ---
-st.set_page_config(page_title="Dashboard Morro Verde", layout="wide")
-
-# Inicializar estados da sessão se não existirem
-if 'pagina_atual' not in st.session_state:
-    st.session_state.pagina_atual = 'dashboard'
+# Inicializar session state
+if 'filtros_aplicados' not in st.session_state:
+    st.session_state.filtros_aplicados = False
 if 'mostrar_filtros' not in st.session_state:
     st.session_state.mostrar_filtros = False
-if 'mostrar_importar' not in st.session_state:
-    st.session_state.mostrar_importar = False
-if 'mostrar_inputar' not in st.session_state:
-    st.session_state.mostrar_inputar = False
+if 'dados_inseridos' not in st.session_state:
+    st.session_state.dados_inseridos = False
+if 'relatorio_em_processamento' not in st.session_state:
+    st.session_state.relatorio_em_processamento = False
+if 'progresso_relatorio' not in st.session_state:
+    st.session_state.progresso_relatorio = 0
+if 'processamento_concluido' not in st.session_state:
+    st.session_state.processamento_concluido = False
+if 'erro_processamento' not in st.session_state:
+    st.session_state.erro_processamento = None
 
-# Funções para alterar o estado dos botões
-def toggle_filtros():
-    st.session_state.mostrar_filtros = not st.session_state.mostrar_filtros
-    st.session_state.mostrar_importar = False
-    st.session_state.mostrar_inputar = False
+# Função para processar relatório em uma thread separada
+def threaded_processar_relatorio(caminho_pdf, num_partes):
+    st.session_state.relatorio_em_processamento = True
+    st.session_state.progresso_relatorio = 0
+    st.session_state.processamento_concluido = False
+    st.session_state.erro_processamento = None
 
-def toggle_importar():
-    st.session_state.mostrar_importar = not st.session_state.mostrar_importar
-    st.session_state.mostrar_filtros = False
-    st.session_state.mostrar_inputar = False
+    def atualizar_progresso(p):
+        st.session_state.progresso_relatorio = p
 
-def toggle_inputar():
-    st.session_state.mostrar_inputar = not st.session_state.mostrar_inputar
-    st.session_state.mostrar_filtros = False
-    st.session_state.mostrar_importar = False
+    try:
+        processar_relatorio(
+            caminho_pdf,
+            callback_progresso=atualizar_progresso,
+            num_partes=num_partes
+        )
+        st.session_state.processamento_concluido = True
+        st.session_state.relatorio_em_processamento = False
+    except Exception as e:
+        st.session_state.erro_processamento = str(e)
+        st.session_state.relatorio_em_processamento = False
+    finally:
+        st.session_state.progresso_relatorio = 100
 
-def mudar_pagina(pagina):
-    st.session_state.pagina_atual = pagina
-
-# Carregamento e pré-processamento dos dados
-df_precos, df_fretes, df_barter, df_produtos, df_localizacoes, df_fertilizantes, df_acordos, df_produtores, tabelas = carregar_dados()
-df_precos['data_preco'] = pd.to_datetime(df_precos['data_preco'])
-df_precos['preco'] = pd.to_numeric(df_precos['preco'], errors='coerce')
-df_barter['data'] = pd.to_datetime(df_barter['data'])
-df_barter['preco_fertilizante'] = pd.to_numeric(df_barter['preco_fertilizante'], errors='coerce')
-df_barter['preco_cultura'] = pd.to_numeric(df_barter['preco_cultura'], errors='coerce')
-df_barter['razao_barter'] = pd.to_numeric(df_barter['razao_barter'], errors='coerce')
-
-# Sidebar com botões
-with st.sidebar:
-    st.image(logo_path, use_container_width=True)
-    st.markdown("---")
+# Função para input manual de dados
+def mostrar_formulario_input():
+    st.subheader("📝 Inserir Dados Manualmente")
     
-    if st.button("Página Inicial", use_container_width=True):
-        mudar_pagina('dashboard')
-    
-    if st.button("Previsões", use_container_width=True):
-        mudar_pagina('previsoes')
-    
-    if st.button("Perfil/Login", use_container_width=True):
-        mudar_pagina('perfil')
-
-# Título principal
-st.title("DASHBOARD - Análise de Concorrência")
-
-# Botões de funcionalidade
-with st.container():
-    col1, col2, col3 = st.columns([1, 1, 1])
-
-    with col1:
-        if st.button("🔍 FILTRAR DADOS", use_container_width=True, key="btn_filtrar"):
-            toggle_filtros()
-        
-    with col2:
-        if st.button("📥 IMPORTAR RELATÓRIO", use_container_width=True, key="btn_importar"):
-            toggle_importar()
-
-    with col3:
-        if st.button("📝 INPUTAR DADOS", use_container_width=True, key="btn_inputar"):
-            toggle_inputar()
-
-# Interface para Filtros
-if st.session_state.mostrar_filtros:
-    with st.expander("Filtros Avançados", expanded=True):
-        col1, col2, col3 = st.columns(3)
+    with st.form("input_dados"):
+        col1, col2 = st.columns(2)
         
         with col1:
-            data_inicio = st.date_input("Data Início", 
-                                        value=datetime.now() - timedelta(days=90),
-                                        max_value=datetime.now())
-            
+            st.markdown("**💰 Dados de Preços**")
+            produto = st.text_input("Nome do Produto *", placeholder="Ex: Soja, Milho, Trigo")
+            localizacao = st.text_input("Localização *", placeholder="Ex: Porto de Santos, Chicago")
+            preco = st.number_input("Preço *", min_value=0.0, step=0.01, format="%.2f")
+            moeda = st.selectbox("Moeda *", ["USD", "BRL", "EUR"])
+            data_preco = st.date_input("Data do Preço", value=datetime.today())
+        
         with col2:
-            data_fim = st.date_input("Data Fim", 
-                                    value=datetime.now(),
-                                    max_value=datetime.now())
-            
-        with col3:
-            todos_produtos = ["Todos"] + list(df_precos['produto'].unique())
-            filtro_produto = st.selectbox("Produto", todos_produtos)
-            
-        col4, col5, col6 = st.columns(3)
+            st.markdown("**🚛 Dados de Frete**")
+            origem = st.text_input("Origem", placeholder="Ex: São Paulo")
+            destino = st.text_input("Destino", placeholder="Ex: Porto de Santos")
+            tipo_transporte = st.selectbox("Tipo de Transporte", ["Rodoviário", "Ferroviário", "Marítimo"])
+            custo_frete = st.number_input("Custo do Frete (USD)", min_value=0.0, step=0.01, format="%.2f")
+            data_frete = st.date_input("Data do Frete", value=datetime.today())
         
-        with col4:
-            todas_localizacoes = ["Todas"] + list(df_precos['localizacao'].unique())
-            filtro_localizacao = st.selectbox("Localização", todas_localizacoes)
-            
-        with col5:
-            todas_moedas = ["Todas"] + list(df_precos['moeda'].unique())
-            filtro_moeda = st.selectbox("Moeda", todas_moedas)
-            
-        with col6:
-            st.write("")
-            st.write("")
-            if st.button("Aplicar Filtros", use_container_width=True):
-                st.success("Filtros aplicados com sucesso!")
-
-# Interface para Importar Relatório
-if st.session_state.mostrar_importar:
-    with st.expander("Importar Relatório (PDF)", expanded=True):
-        st.info("Faça upload do relatório em PDF recebido do cliente.")
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            submitted_preco = st.form_submit_button("💾 Salvar Apenas Preço", use_container_width=True)
+        with col_btn2:
+            submitted_completo = st.form_submit_button("💾 Salvar Preço + Frete", use_container_width=True)
         
-        uploaded_file = st.file_uploader("Selecione o arquivo PDF", type=["pdf"])
-        
-        if uploaded_file is not None:
-            # Exibir informações do arquivo
-            file_details = {
-                "Nome do arquivo": uploaded_file.name,
-                "Tipo de arquivo": uploaded_file.type,
-                "Tamanho": f"{uploaded_file.size / 1024:.2f} KB"
-            }
+        # Processamento dos dados
+        if submitted_preco or submitted_completo:
+            # Validação dos campos obrigatórios para preço
+            if not produto or not localizacao or preco <= 0:
+                st.error("❌ Preencha todos os campos obrigatórios de preço: Produto, Localização e Preço > 0")
+                return
             
-            st.json(file_details)
+            # Salvar preço
+            sucesso_preco, msg_preco = salvar_preco_manual(produto, localizacao, preco, moeda, data_preco)
             
-            # Visualização prévia e processamento
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if st.button("Visualizar conteúdo", use_container_width=True):
-                    # Salvar o PDF temporariamente
-                    temp_path = salvar_pdf(uploaded_file)
+            if submitted_completo:
+                # Validação para frete também
+                if not origem or not destino or custo_frete <= 0:
+                    st.error("❌ Para salvar frete também, preencha: Origem, Destino e Custo > 0")
+                    return
                     
-                    # Extrair texto do PDF
-                    texto = extrair_texto_pdf(temp_path)
+                sucesso_frete, msg_frete = salvar_frete_manual(origem, destino, custo_frete, "USD", data_frete)
+                
+                if sucesso_preco and sucesso_frete:
+                    st.success("✅ Preço e Frete salvos com sucesso!")
                     
-                    # Exibir prévia do texto
-                    st.text_area("Prévia do conteúdo", texto[:500] + "...", height=300)
-            
-            with col2:
-                cliente = st.text_input("Cliente")
-                data_relatorio = st.date_input("Data do relatório", value=datetime.now())
-                notas = st.text_area("Observações", height=150)
-                
-                if st.button("Salvar relatório", use_container_width=True):
-                    if cliente:
-                        # Salvar o relatório definitivamente
-                        file_path = salvar_pdf(uploaded_file)
-                        st.success(f"Relatório '{uploaded_file.name}' salvo com sucesso!")
-                        st.info(f"Caminho do arquivo: {file_path}")
-                    else:
-                        st.warning("Por favor, informe o nome do cliente.")
-
-# Interface para Inputar Dados
-if st.session_state.mostrar_inputar:
-    with st.expander("Inputar Dados no Banco", expanded=True):
-        # Selecionar tabela para inserção
-        tabela_selecionada = st.selectbox("Selecione a tabela para inserção de dados", tabelas)
-        
-        if tabela_selecionada:
-            # Obter esquema da tabela selecionada
-            esquema = obter_esquema_tabela(tabela_selecionada)
-            
-            st.subheader(f"Inserir dados na tabela: {tabela_selecionada}")
-            
-            # Criar campos de entrada baseados no esquema da tabela
-            dados_form = {}
-            colunas_por_linha = 2
-            
-            colunas_nao_pk = [col for col in esquema if not col["pk"]]
-            
-            # Organizar em linhas com duas colunas
-            for i in range(0, len(colunas_nao_pk), colunas_por_linha):
-                cols = st.columns(colunas_por_linha)
-                
-                for j in range(colunas_por_linha):
-                    if i + j < len(colunas_nao_pk):
-                        coluna = colunas_nao_pk[i + j]
-                        nome_coluna = coluna["nome"]
-                        tipo_coluna = coluna["tipo"].upper()
-                        
-                        with cols[j]:
-                            # Criar campo de entrada apropriado para o tipo de dado
-                            if "INT" in tipo_coluna:
-                                dados_form[nome_coluna] = st.number_input(
-                                    f"{nome_coluna} ({tipo_coluna})", 
-                                    step=1
-                                )
-                            elif "REAL" in tipo_coluna or "FLOAT" in tipo_coluna or "DOUBLE" in tipo_coluna:
-                                dados_form[nome_coluna] = st.number_input(
-                                    f"{nome_coluna} ({tipo_coluna})", 
-                                    step=0.01
-                                )
-                            elif "DATE" in tipo_coluna:
-                                dados_form[nome_coluna] = st.date_input(
-                                    f"{nome_coluna} ({tipo_coluna})", 
-                                    value=datetime.now()
-                                )
-                            else:  # Tipo TEXT ou outros
-                                # Verificar se é um campo que requer seleção de valores existentes
-                                if nome_coluna == "id_produto" and tabela_selecionada in ["preco", "barter"]:
-                                    opcoes = df_produtos.set_index("id_produto")["nome"].to_dict()
-                                    id_selecionado = st.selectbox(
-                                        f"{nome_coluna} (Produto)", 
-                                        options=list(opcoes.keys()),
-                                        format_func=lambda x: f"{x} - {opcoes[x]}"
-                                    )
-                                    dados_form[nome_coluna] = id_selecionado
-                                    
-                                elif nome_coluna == "id_localizacao" or nome_coluna == "origem" or nome_coluna == "destino":
-                                    opcoes = df_localizacoes.set_index("id_localizacao")["nome"].to_dict()
-                                    id_selecionado = st.selectbox(
-                                        f"{nome_coluna} (Localização)", 
-                                        options=list(opcoes.keys()),
-                                        format_func=lambda x: f"{x} - {opcoes[x]}"
-                                    )
-                                    dados_form[nome_coluna] = id_selecionado
-                                    
-                                elif nome_coluna == "cultura" and tabela_selecionada == "barter":
-                                    culturas_unicas = df_barter["cultura"].unique()
-                                    dados_form[nome_coluna] = st.selectbox(
-                                        f"{nome_coluna}", 
-                                        options=[""] + list(culturas_unicas)
-                                    )
-                                    
-                                elif nome_coluna == "estado" and tabela_selecionada == "barter":
-                                    estados_unicos = df_barter["estado"].unique()
-                                    dados_form[nome_coluna] = st.selectbox(
-                                        f"{nome_coluna}", 
-                                        options=[""] + list(estados_unicos)
-                                    )
-                                    
-                                elif nome_coluna == "tipo_transporte" and tabela_selecionada == "frete":
-                                    dados_form[nome_coluna] = st.selectbox(
-                                        f"{nome_coluna}", 
-                                        options=["Rodoviário", "Ferroviário", "Marítimo", "Aéreo"]
-                                    )
-                                    
-                                elif nome_coluna == "fornecedor" and tabela_selecionada == "fertilizantes":
-                                    fornecedores = df_fertilizantes["fornecedor"].unique() if not df_fertilizantes.empty else []
-                                    dados_form[nome_coluna] = st.text_input(
-                                        f"{nome_coluna}", 
-                                        key=f"input_{tabela_selecionada}_{nome_coluna}"
-                                    )
-                                    if fornecedores.size > 0:
-                                        st.selectbox(
-                                            "Fornecedores existentes", 
-                                            options=[""] + list(fornecedores),
-                                            key=f"select_{tabela_selecionada}_{nome_coluna}"
-                                        )
-                                    
-                                else:
-                                    dados_form[nome_coluna] = st.text_input(
-                                        f"{nome_coluna} ({tipo_coluna})", 
-                                        key=f"input_{tabela_selecionada}_{nome_coluna}"
-                                    )
-            
-            # Campos especiais que requerem cálculos
-            if tabela_selecionada == "barter" and "preco_npk" in dados_form and "preco_cultura" in dados_form:
-                try:
-                    preco_npk = float(dados_form["preco_npk"]) if dados_form["preco_npk"] else 0
-                    preco_cultura = float(dados_form["preco_cultura"]) if dados_form["preco_cultura"] else 0
-                    
-                    if preco_cultura > 0:
-                        razao = preco_npk / preco_cultura
-                        st.info(f"Razão de permuta calculada: {razao:.2f}")
-                        dados_form["razao_barter"] = str(round(razao, 2))
-                except:
-                    pass
-            
-            # Botão para salvar os dados
-            if st.button("Salvar dados", use_container_width=True):
-                # Validar dados (implementação simples)
-                campos_vazios = [nome for nome, valor in dados_form.items() if not valor and valor != 0]
-                
-                if campos_vazios:
-                    st.warning(f"Por favor, preencha os seguintes campos: {', '.join(campos_vazios)}")
                 else:
-                    # Converter datas para string no formato ISO
-                    for nome, valor in dados_form.items():
-                        if isinstance(valor, datetime) or isinstance(valor, date):
-                            dados_form[nome] = valor.isoformat()
+                    if not sucesso_preco:
+                        st.error(f"❌ Erro ao salvar preço: {msg_preco}")
+                    if not sucesso_frete:
+                        st.error(f"❌ Erro ao salvar frete: {msg_frete}")
+            else:
+                if sucesso_preco:
+                    st.success("✅ Preço salvo com sucesso!")
                     
-                    # Tentar inserir os dados no banco
-                    sucesso, mensagem = inserir_dados(tabela_selecionada, dados_form)
-                    
-                    if sucesso:
-                        st.success(mensagem)
-                        # Recarregar dados para refletir as alterações
-                        if st.button("Recarregar dados"):
-                            st.experimental_rerun()
-                    else:
-                        st.error(mensagem)
+                else:
+                    st.error(f"❌ Erro ao salvar preço: {msg_preco}")
 
-# Conteúdo principal com base na página atual
-if st.session_state.pagina_atual == 'dashboard':
-    # Gráfico interativo principal
-    st.subheader("📈 Variação de Preços por Concorrente")
+            time.sleep(2)
+            st.rerun()
 
-    # Seleção de produto e moeda
-    produto_focus = st.selectbox("Produto para análise", df_precos['produto'].unique())
-    moeda_focus = st.selectbox("Moeda:", df_precos['moeda'].unique())
-
-    # Filtrar por produto e moeda
-    df_focus = df_precos[
-        (df_precos['produto'] == produto_focus) &
-        (df_precos['moeda'] == moeda_focus)
-    ]
-
-    # Verifica se há dados disponíveis
-    if not df_focus.empty:
-        fig = px.line(
-            df_focus.sort_values('data_preco'),
-            x='data_preco',
-            y='preco',
-            color='localizacao',
-            title=f'Histórico de Preços ({moeda_focus}) - {produto_focus}',
-            markers=True
-        )
-        fig.update_layout(
-            title_font=dict(size=20), 
-            margin=dict(t=50, b=10),
-            legend_title="Localização"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+# Sidebar
+with st.sidebar:
+    if os.path.exists(logo_path):
+        st.image(logo_path, use_container_width=True)
     else:
-        st.warning("Nenhum dado encontrado para o produto e moeda selecionados.")
+        st.markdown("# 🌱 Morro Verde")
+    st.markdown("---")
+    
+    if st.button("🏠 Página Inicial", use_container_width=True):
+        st.switch_page("app.py")
 
-    # Seção de Avisos Urgentes - Melhorado o contraste
-    st.subheader("⚠️ Avisos Urgentes")
-    avisos = [
-        "Variação abrupta de preço detectada no PR.",
-        "Preço médio do frete entre GO e MT aumentou 12%.",
-        "Queda no preço da cultura no MS nas últimas semanas.",
-        "Alta nos custos de transporte no MT.",
-        "Produto importado abaixo da média histórica."
-    ]
+    if st.button("📊 Previsões", use_container_width=True):
+        st.switch_page("pages/previsoes.py")
+    
+    # Indicador de status
+    st.markdown("---")
+    st.markdown("**📊 Status do Sistema**")
+    
+    try:
+        df_precos, df_fretes, df_barter = carregar_dados()
+        st.metric("Registros de Preços", len(df_precos))
+        st.metric("Registros de Fretes", len(df_fretes))
+        st.metric("Registros de Barter", len(df_barter))
+    except:
+        st.error("❌ Erro ao conectar com banco")
 
-    # Cards para avisos com melhor contraste
-    cols_avisos = st.columns(len(avisos))
-    for i, aviso in enumerate(avisos):
-        with cols_avisos[i]:
-            st.markdown(
-                f"""
-                <div style='background-color: #FFA000; color: #000000; padding: 1rem; 
-                border-radius: 5px; height: 100%; font-weight: 500; text-align: center;'>
-                ⚠️ {aviso}
-                </div>
-                """, 
-                unsafe_allow_html=True
-            )
+st.title("📊 DASHBOARD - Análise de Concorrência")
+st.markdown("**Sistema de monitoramento de preços e logística agrícola**")
 
-    # Gráfico de comparação Permuta
-    st.subheader("📉 Comparativo Permuta")
+# Botões principais
+col1, col2, col3 = st.columns([1,1,1])
 
-    culturas_disponiveis = df_barter['cultura'].unique()
-    cultura_selecionada = st.selectbox("Selecione a Cultura:", culturas_disponiveis)
+with col1:
+    if st.button("🔍 FILTRAR DADOS", use_container_width=True):
+        st.session_state.mostrar_filtros = not st.session_state.mostrar_filtros
+        st.rerun()
 
-    # Filtrar df_barter pela cultura
-    filtros_barter = df_barter[df_barter['cultura'] == cultura_selecionada]
+with col2:
+    st.markdown("**📥 Importar Relatório PDF**")
+    
+    col2a, col2b = st.columns([3,1])
+    with col2a:
+        uploaded_file = st.file_uploader("Selecione o arquivo PDF", type=["pdf"], key="upload")
+    with col2b:
+        num_partes = st.slider("Partes", 1, 15, 10, help="Dividir relatório em quantas partes?")
+    
+    if st.button("📥 IMPORTAR RELATÓRIO", use_container_width=True) and uploaded_file is not None:
+        # Criar diretório se não existir
+        os.makedirs("relatorios", exist_ok=True)
+        caminho_pdf = "relatorios/relatorio_temp.pdf"
+        
+        with open(caminho_pdf, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        
+        # Iniciar processamento
+        thread = threading.Thread(target=threaded_processar_relatorio, args=(caminho_pdf, num_partes))
+        thread.start()
+        st.rerun()
 
-    # Obter fertilizantes usados nessa cultura
-    ids_usados = filtros_barter['id_produto'].unique()
-    fertilizantes_disponiveis = df_produtos[df_produtos['id_produto'].isin(ids_usados)]['nome'].tolist()
+with col3:
+    if st.button("📝 INPUTAR DADOS", use_container_width=True):
+        st.session_state.dados_inseridos = not st.session_state.dados_inseridos
+        st.rerun()
 
-    if fertilizantes_disponiveis:
-        fertilizante_selecionado = st.selectbox("Produto (Fertilizante):", fertilizantes_disponiveis)
+# Auto-refresh enquanto processando
+if st.session_state.get("relatorio_em_processamento", False):
+    st_autorefresh(interval=2000, key="auto_refresh")
 
-        if fertilizante_selecionado:
-            id_fertilizante = df_produtos[df_produtos['nome'] == fertilizante_selecionado]['id_produto'].values[0]
-            filtros_barter = filtros_barter[filtros_barter['id_produto'] == id_fertilizante]
+# STATUS DO PROCESSAMENTO - MELHORADO E FUNCIONAL
+with st.container():
+    if st.session_state.get("relatorio_em_processamento", False):
+        st.info("⏳ **Relatório está sendo processado... aguarde.**")
+        
+        progresso = st.session_state.get("progresso_relatorio", 0)
+        progress_bar = st.progress(progresso / 100)
+        
+        col_prog1, col_prog2 = st.columns([3, 1])
+        with col_prog1:
+            st.write(f"**Progresso: {progresso}%**")
+        with col_prog2:
+            if progresso > 0:
+                st.write(f"⏱️ Processando...")
+        
+    elif st.session_state.get("processamento_concluido", False):
+        st.success("✅ **Relatório processado com sucesso!**")
+        
+        with st.container():
+            st.info("🔄 **Atualize a página para ver as mudanças nos gráficos e dados**")
+            
+            col_btn1, col_btn2 = st.columns(2)
+            with col_btn1:
+                if st.button("🔄 **ATUALIZAR DASHBOARD**", use_container_width=True, type="primary"):
+                    st.session_state.processamento_concluido = False
+                    st.session_state.progresso_relatorio = 0
+                    st.rerun()
+            with col_btn2:
+                if st.button("❌ Fechar Notificação", use_container_width=True):
+                    st.session_state.processamento_concluido = False
+                    st.session_state.progresso_relatorio = 0
+                    st.rerun()
+                
+    elif st.session_state.get("erro_processamento"):
+        st.error(f"❌ **Erro no processamento:** {st.session_state.erro_processamento}")
+        
+        col_err1, col_err2 = st.columns(2)
+        with col_err1:
+            if st.button("🔄 Tentar Novamente", use_container_width=True):
+                st.session_state.erro_processamento = None
+                st.rerun()
+        with col_err2:
+            if st.button("❌ Fechar Erro", use_container_width=True):
+                st.session_state.erro_processamento = None
+                st.rerun()
 
-            fig_barter = px.line(
-                filtros_barter.sort_values("data"),
-                x="data",
-                y="razao_barter",
-                color="estado",
-                title=f"Permuta {fertilizante_selecionado} / {cultura_selecionada} - Razão ao longo do tempo"
-            )
-            fig_barter.update_layout(legend_title="Estado")
-            st.plotly_chart(fig_barter, use_container_width=True)
+# Mostrar formulário de input se solicitado
+if st.session_state.dados_inseridos:
+    mostrar_formulario_input()
+    st.markdown("---")
+
+# Carregar dados do banco
+try:
+    df_precos, df_fretes, df_barter = carregar_dados()
+except Exception as e:
+    st.error(f"❌ Erro ao carregar dados do banco: {e}")
+    st.stop()
+
+if df_precos.empty and df_fretes.empty:
+    st.warning("⚠️ **Nenhum dado encontrado no banco.** Importe um relatório ou insira dados manualmente.")
+    st.info("💡 **Dicas:**")
+    st.markdown("""
+    - Use o botão **📝 INPUTAR DADOS** para adicionar dados manualmente
+    - Use o botão **📥 IMPORTAR RELATÓRIO** para processar um PDF
+    - Verifique se o banco de dados foi criado corretamente
+    """)
+    st.stop()
+
+# Converter tipos de dados
+if not df_precos.empty:
+    df_precos['data_preco'] = pd.to_datetime(df_precos['data_preco'])
+    df_precos['preco'] = pd.to_numeric(df_precos['preco'], errors='coerce')
+
+if not df_barter.empty:
+    df_barter['data'] = pd.to_datetime(df_barter['data'], errors='coerce')
+    df_barter['preco_cultura'] = pd.to_numeric(df_barter['preco_cultura'], errors='coerce')
+    df_barter['razao_barter'] = pd.to_numeric(df_barter['razao_barter'], errors='coerce')
+
+# SISTEMA DE FILTROS FUNCIONAL
+if not df_precos.empty:
+    filtro_produto = df_precos['produto'].unique()
+    filtro_local = df_precos['localizacao'].unique()
+    filtro_moeda = df_precos['moeda'].unique()
+    data_min = df_precos['data_preco'].min().date() if not pd.isna(df_precos['data_preco'].min()) else datetime.today().date()
+    data_max = df_precos['data_preco'].max().date() if not pd.isna(df_precos['data_preco'].max()) else datetime.today().date()
+
+    # Mostrar filtros se solicitado
+    if st.session_state.mostrar_filtros:
+        with st.expander("🔍 Filtros Avançados", expanded=True):
+            col_f1, col_f2, col_f3 = st.columns(3)
+            
+            with col_f1:
+                filtro_produto = st.multiselect(
+                    "Produtos:", 
+                    options=df_precos['produto'].unique(), 
+                    default=list(df_precos['produto'].unique())
+                )
+                
+            with col_f2:
+                filtro_local = st.multiselect(
+                    "Localizações:", 
+                    options=df_precos['localizacao'].unique(), 
+                    default=list(df_precos['localizacao'].unique())
+                )
+                
+            with col_f3:
+                filtro_moeda = st.multiselect(
+                    "Moedas:", 
+                    options=df_precos['moeda'].unique(), 
+                    default=list(df_precos['moeda'].unique())
+                )
+            
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                data_inicio = st.date_input("Data Início:", value=data_min, min_value=data_min, max_value=data_max)
+            with col_d2:
+                data_fim = st.date_input("Data Fim:", value=data_max, min_value=data_min, max_value=data_max)
+            
+            if st.button("✅ Aplicar Filtros", use_container_width=True):
+                st.session_state.filtros_aplicados = True
+                st.success("Filtros aplicados!")
+                time.sleep(1)
+                st.rerun()
+            
+            filtro_data = [data_inicio, data_fim]
     else:
-        st.warning(f"Não há dados de permuta disponíveis para a cultura {cultura_selecionada}")
+        filtro_data = [data_min, data_max]
 
-    # Análises adicionais
-    st.subheader("📊 Análises Gerais")
-    col1, col2 = st.columns(2)
+    # Aplicar filtros nos dados
+    df_precos_filt = df_precos[
+        (df_precos['produto'].isin(filtro_produto)) &
+        (df_precos['localizacao'].isin(filtro_local)) &
+        (df_precos['moeda'].isin(filtro_moeda)) &
+        (df_precos['data_preco'] >= pd.to_datetime(filtro_data[0])) &
+        (df_precos['data_preco'] <= pd.to_datetime(filtro_data[1]))
+    ]
+else:
+    df_precos_filt = df_precos
 
-    # Gráfico 1 - Média de preço por produto (em BRL)
-    with col1:
-        preco_medio = df_precos[df_precos['moeda'] == 'BRL'].groupby("produto")["preco"].mean().reset_index()
-        preco_medio = preco_medio.sort_values("preco", ascending=False)
-        fig1 = px.bar(
-            preco_medio, 
-            x='produto', 
-            y='preco', 
-            title='Preço Médio por Produto (BRL)', 
-            text_auto=True,
-            color='produto'
-        )
-        fig1.update_layout(showlegend=False)
-        st.plotly_chart(fig1, use_container_width=True)
+# KPIs MELHORADOS
+st.subheader("📊 Indicadores Principais")
+kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
-    # Gráfico 2 - Média de preço por local (em BRL)
-    with col2:
-        preco_local = df_precos[df_precos['moeda'] == 'BRL'].groupby("localizacao")["preco"].mean().reset_index()
-        fig2 = px.pie(
-            preco_local, 
-            names='localizacao', 
-            values='preco', 
-            title='Distribuição de Preço Médio por Localização (BRL)',
-            hole=0.4
-        )
-        st.plotly_chart(fig2, use_container_width=True)
+with kpi1:
+    st.metric("Produtos únicos", df_precos_filt['produto'].nunique() if not df_precos_filt.empty else 0)
 
-    # Tabela de fretes
-    st.subheader("🚚 Tabela de Fretes Atuais")
-    st.dataframe(
-        df_fretes.sort_values("data_frete", ascending=False).head(10),
-        use_container_width=True,
-        column_config={
-            "origem": "Origem",
-            "destino": "Destino",
-            "tipo_transporte": "Tipo de Transporte",
-            "preco": st.column_config.NumberColumn("Preço", format="R$ %.2f"),
-            "moeda": "Moeda",
-            "data_frete": st.column_config.DateColumn("Data", format="DD/MM/YYYY")
-        }
+with kpi2:
+    st.metric("Locais únicos", df_precos_filt['localizacao'].nunique() if not df_precos_filt.empty else 0)
+
+with kpi3:
+    st.metric("Registros de preço", len(df_precos_filt))
+
+with kpi4:
+    if not df_precos_filt.empty and df_precos_filt['preco'].notna().any():
+        preco_medio = df_precos_filt['preco'].mean()
+        st.metric("Preço médio", f"${preco_medio:.2f}")
+    else:
+        st.metric("Preço médio", "N/A")
+
+with kpi5:
+    st.metric("Registros de permuta", len(df_barter))
+
+# GRÁFICOS EXISTENTES + NOVOS + MELHORADOS
+
+# 1. Gráfico histórico de preços
+st.subheader("📈 Histórico de Preços")
+if not df_precos_filt.empty:
+    fig_preco = px.line(
+        df_precos_filt.sort_values('data_preco'),
+        x='data_preco',
+        y='preco',
+        color='produto',
+        line_dash='localizacao',
+        markers=True,
+        title="Evolução dos preços por produto e localização"
     )
+    fig_preco.update_layout(
+        margin=dict(t=50, b=20),
+        hovermode='x unified'
+    )
+    st.plotly_chart(fig_preco, use_container_width=True)
+else:
+    st.info("Nenhum dado de preços disponível para o gráfico de histórico.")
 
-elif st.session_state.pagina_atual == 'previsoes':
-    st.header("Previsões de Mercado")
-    st.info("Esta página está em desenvolvimento. Em breve você poderá visualizar previsões e tendências de mercado.")
+# 2. Comparação de preços por produto (Boxplot)
+if not df_precos_filt.empty and df_precos_filt['preco'].notna().any():
+    st.subheader("📊 Distribuição de Preços por Produto")
+    fig_box = px.box(
+        df_precos_filt,
+        x='produto',
+        y='preco',
+        color='produto',
+        title="Distribuição e outliers de preços por produto"
+    )
+    fig_box.update_layout(margin=dict(t=50, b=20))
+    st.plotly_chart(fig_box, use_container_width=True)
+
+# 3. Variação percentual mensal
+if not df_precos_filt.empty and len(df_precos_filt) > 1:
+    st.subheader("📊 Variação Percentual Mensal dos Preços")
+    df_precos_filt['ano_mes'] = df_precos_filt['data_preco'].dt.to_period('M')
+    df_pct = df_precos_filt.groupby(['produto', 'ano_mes']).preco.mean().reset_index()
+    df_pct['ano_mes'] = df_pct['ano_mes'].dt.to_timestamp()
+    df_pct['pct_var'] = df_pct.groupby('produto')['preco'].pct_change() * 100
     
-    # Placeholder para mockup de previsões
-    st.subheader("Tendências Previstas (Mockup)")
-    tendencias_data = {
-        'Produto': ['MAP', 'KCL', 'Ureia', 'TSP', 'SSP'],
-        'Tendência': [1, -1, 1, 0, -1],
-        'Previsão (%)': [12, -8, 5, 0, -3]
-    }
+    fig_pct = px.line(
+        df_pct,
+        x='ano_mes',
+        y='pct_var',
+        color='produto',
+        title="Variação percentual média mensal por produto",
+        markers=True
+    )
+    fig_pct.update_layout(margin=dict(t=50, b=20))
+    st.plotly_chart(fig_pct, use_container_width=True)
+
+# 4. Heatmap de preços por localização e produto
+if not df_precos_filt.empty and len(df_precos_filt) > 3:
+    st.subheader("🔥 Mapa de Calor - Preços por Localização")
+    heatmap_data = df_precos_filt.groupby(['produto', 'localizacao'])['preco'].mean().reset_index()
     
-    tendencias_df = pd.DataFrame(tendencias_data)
+    if len(heatmap_data) > 1:
+        heatmap_pivot = heatmap_data.pivot(index='produto', columns='localizacao', values='preco')
+        
+        fig_heatmap = px.imshow(
+            heatmap_pivot.values,
+            x=heatmap_pivot.columns,
+            y=heatmap_pivot.index,
+            aspect="auto",
+            title="Preços médios por produto e localização",
+            color_continuous_scale="Viridis"
+        )
+        st.plotly_chart(fig_heatmap, use_container_width=True)
+
+# 5. Dispersão preço x data
+if not df_precos_filt.empty:
+    st.subheader("🔍 Dispersão Preço x Data")
+    fig_disp = px.scatter(
+        df_precos_filt,
+        x='data_preco',
+        y='preco',
+        color='produto',
+        size='preco',
+        hover_data=['localizacao', 'moeda'],
+        title="Dispersão dos preços ao longo do tempo"
+    )
+    fig_disp.update_layout(margin=dict(t=50, b=20))
+    st.plotly_chart(fig_disp, use_container_width=True)
+
+# 6. Ranking de produtos por preço médio
+if not df_precos_filt.empty:
+    st.subheader("🏆 Ranking de Produtos por Preço Médio")
+    ranking_produtos = df_precos_filt.groupby('produto')['preco'].agg(['mean', 'count']).reset_index()
+    ranking_produtos.columns = ['Produto', 'Preço Médio', 'Qtd Registros']
+    ranking_produtos = ranking_produtos.sort_values('Preço Médio', ascending=False)
     
-    # Criar indicadores de tendência
-    def formatar_tendencia(val):
-        if val == 1:
-            return "↗️ Alta"
-        elif val == -1:
-            return "↘️ Queda"
+    fig_ranking = px.bar(
+        ranking_produtos.head(10),
+        x='Produto',
+        y='Preço Médio',
+        title="Top 10 Produtos por Preço Médio",
+        text='Preço Médio',
+        color='Preço Médio',
+        color_continuous_scale="Viridis"
+    )
+    fig_ranking.update_traces(texttemplate='$%{text:.2f}', textposition='outside')
+    st.plotly_chart(fig_ranking, use_container_width=True)
+
+# 7. NOVO: Análise de correlação entre produtos
+if not df_precos_filt.empty and len(df_precos_filt['produto'].unique()) > 1:
+    st.subheader("🔗 Correlação de Preços Entre Produtos")
+    
+    # Preparar dados para correlação
+    df_corr = df_precos_filt.pivot_table(
+        index='data_preco', 
+        columns='produto', 
+        values='preco', 
+        aggfunc='mean'
+    )
+    
+    if df_corr.shape[1] > 1:
+        corr_matrix = df_corr.corr()
+        
+        fig_corr = px.imshow(
+            corr_matrix,
+            aspect="auto",
+            title="Matriz de Correlação de Preços Entre Produtos",
+            color_continuous_scale="RdBu_r",
+            zmin=-1, zmax=1
+        )
+        st.plotly_chart(fig_corr, use_container_width=True)
+
+# Dashboard Fretes (melhorado)
+st.subheader("🚛 Análise Detalhada de Custos Logísticos (Fretes)")
+if not df_fretes.empty:
+    col_f1, col_f2 = st.columns(2)
+    
+    with col_f1:
+        # Gráfico de fretes por tipo de transporte
+        frete_por_tipo = df_fretes.groupby('tipo_transporte')['preco'].mean().reset_index()
+        fig_frete_tipo = px.pie(
+            frete_por_tipo,
+            names='tipo_transporte',
+            values='preco',
+            title="Distribuição de Custos por Tipo de Transporte"
+        )
+        st.plotly_chart(fig_frete_tipo, use_container_width=True)
+    
+    with col_f2:
+        # Scatter plot origem-destino
+        df_fretes_agrup = df_fretes.groupby(['origem', 'destino', 'tipo_transporte']).agg({
+            'preco':'mean', 
+            'data':'count'
+        }).reset_index()
+        df_fretes_agrup.rename(columns={'data':'volume'}, inplace=True)
+        
+        fig_fretes = px.scatter(
+            df_fretes_agrup,
+            x='origem',
+            y='destino',
+            size='volume',
+            color='tipo_transporte',
+            hover_name='tipo_transporte',
+            title="Volume e Preço Médio dos Fretes por Rota"
+        )
+        st.plotly_chart(fig_fretes, use_container_width=True)
+else:
+    st.info("Nenhum dado de fretes disponível para exibir.")
+
+# Análise Sazonal (melhorada)
+st.subheader("📅 Análise Sazonal dos Preços")
+try:
+    import statsmodels.api as sm
+    
+    ts_data = df_precos_filt.copy()
+    ts_data['ano_mes'] = ts_data['data_preco'].dt.to_period('M')
+    ts_data = ts_data.groupby('ano_mes')['preco'].mean()
+    ts_data = ts_data.dropna()
+    ts_data.index = ts_data.index.to_timestamp()
+    
+    if len(ts_data) >= 24:
+        decomposition = sm.tsa.seasonal_decompose(ts_data, model='additive', period=12)
+        
+        fig_seasonal = go.Figure()
+        fig_seasonal.add_trace(go.Scatter(
+            x=decomposition.seasonal.index,
+            y=decomposition.seasonal.values,
+            mode='lines',
+            name='Componente Sazonal',
+            line=dict(color='blue')
+        ))
+        fig_seasonal.update_layout(
+            title='Componente Sazonal dos Preços Médios',
+            margin=dict(t=50, b=20),
+            xaxis_title="Data",
+            yaxis_title="Variação Sazonal"
+        )
+        st.plotly_chart(fig_seasonal, use_container_width=True)
+    else:
+        st.info(f"A série temporal precisa de pelo menos 24 meses para análise sazonal. Atualmente possui {len(ts_data)} meses.")
+        
+        # Mostrar análise mensal alternativa
+        if len(ts_data) >= 6:
+            fig_mensal = px.line(
+                x=ts_data.index,
+                y=ts_data.values,
+                title="Evolução dos Preços Médios Mensais",
+                labels={'x': 'Data', 'y': 'Preço Médio'}
+            )
+            st.plotly_chart(fig_mensal, use_container_width=True)
+
+except Exception as e:
+    st.warning(f"Análise sazonal não disponível: {e}")
+
+# Alertas automáticos (melhorados)
+st.subheader("⚠️ Alertas Automáticos")
+try:
+    if not df_precos_filt.empty and len(df_precos_filt) > 1:
+        df_precos_filt_sorted = df_precos_filt.sort_values(['produto', 'localizacao', 'data_preco'])
+        df_precos_filt_sorted['pct_change'] = df_precos_filt_sorted.groupby(['produto', 'localizacao'])['preco'].pct_change(fill_method=None) * 100
+        
+        alertas = df_precos_filt_sorted[
+            (df_precos_filt_sorted['pct_change'].abs() > 10) & 
+            (df_precos_filt_sorted['pct_change'].notna())
+        ]
+        
+        if not alertas.empty:
+            st.markdown("**🚨 Variações Significativas Detectadas:**")
+            for _, row in alertas.head(5).iterrows():
+                if row['pct_change'] > 0:
+                    st.success(f"📈 {row['produto']} em {row['localizacao']}: +{row['pct_change']:.1f}% em {row['data_preco'].date()}")
+                else:
+                    st.error(f"📉 {row['produto']} em {row['localizacao']}: {row['pct_change']:.1f}% em {row['data_preco'].date()}")
         else:
-            return "→ Estável"
-    
-    tendencias_df['Indicador'] = tendencias_df['Tendência'].apply(formatar_tendencia)
-    
-    # Mostrar tabela com tendências
-    st.dataframe(
-        tendencias_df[['Produto', 'Indicador', 'Previsão (%)']],
-        use_container_width=True,
-        hide_index=True
+            st.info("✅ Nenhuma variação significativa detectada (>10%).")
+    else:
+        st.info("Dados insuficientes para análise de variação.")
+        
+except Exception as e:
+    st.warning(f"Erro ao gerar alertas: {e}")
+
+# Distribuição preço médio por produto (melhorado)
+st.subheader("📊 Distribuição do Preço Médio por Produto")
+if not df_precos_filt.empty:
+    preco_medio_produto = df_precos_filt.groupby('produto')['preco'].mean().reset_index()
+    fig_pie = px.pie(
+        preco_medio_produto, 
+        names='produto', 
+        values='preco', 
+        title='Distribuição de Preço Médio por Produto'
     )
+    fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+    st.plotly_chart(fig_pie, use_container_width=True)
 
-elif st.session_state.pagina_atual == 'perfil':
-    st.header("Perfil do Usuário")
-    
-    
-    # Simulação de perfil
-    col1, col2 = st.columns([1, 2])
-    
-    with col1:
-        st.markdown("""
-        **Nome:** João da Silva  
-        **Cargo:** Analista de Dados Agrícolas  
-        **Organização:** Morro Verde  
-        **Último acesso:** 19/05/2025  
-        """)
+# Tabelas de dados (melhoradas)
+col_tab1, col_tab2 = st.columns(2)
 
-    with col2:
-        st.markdown("""
-        ### Sobre você  
-        Você está utilizando o sistema de monitoramento de preços, fretes e permutas para tomar decisões estratégicas no agronegócio.  
-        Aqui você poderá acompanhar seus relatórios importados, inserir novos dados e acessar dashboards interativos.  
-        """)
+with col_tab1:
+    st.subheader("💰 Últimos Preços Registrados")
+    if not df_precos_filt.empty:
+        tabela_precos = df_precos_filt.sort_values("data_preco", ascending=False).head(10)
+        tabela_precos['data_preco'] = tabela_precos['data_preco'].dt.strftime('%d/%m/%Y')
+        st.dataframe(tabela_precos[['produto', 'localizacao', 'preco', 'moeda', 'data_preco']], use_container_width=True)
+    else:
+        st.info("Nenhum dado de preços disponível.")
+
+with col_tab2:
+    st.subheader("🚚 Últimos Fretes Registrados")
+    if not df_fretes.empty:
+        tabela_fretes = df_fretes.sort_values("data", ascending=False).head(10)
+        st.dataframe(tabela_fretes, use_container_width=True)
+    else:
+        st.info("Nenhum dado de fretes disponível.")
+
+# Rodapé
+st.markdown("---")
+st.markdown("**Dashboard Morro Verde** - Análise de Concorrência | Dados atualizados em tempo real")
