@@ -11,9 +11,31 @@ from streamlit_autorefresh import st_autorefresh
 from database_utils import salvar_preco_manual, salvar_frete_manual
 import os
 
+st.set_page_config(
+    page_title="Dashboard Morro Verde",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        'About': None,
+        'Get Help': None,
+        'Report a bug': None
+    }
+)
+
+# Esconde o seletor de páginas padrão
+hide_pages = """
+    <style>
+        [data-testid="stSidebarNav"] {
+            display: none;
+        }
+    </style>
+"""
+st.markdown(hide_pages, unsafe_allow_html=True)
+
 
 DB_PATH = 'morro_verde.db'
 logo_path = "img/logo-morro-verde.png"
+
 
 def criar_conexao():
     conn = sqlite3.connect(DB_PATH)
@@ -44,8 +66,6 @@ def carregar_dados():
     conn.close()
     return df_precos, df_fretes, df_barter
 
-# Configuração da página
-st.set_page_config(page_title="Dashboard Morro Verde", layout="wide")
 
 # Inicializar session state
 if 'filtros_aplicados' not in st.session_state:
@@ -161,12 +181,10 @@ with st.sidebar:
     st.markdown("---")
     
     if st.button("🏠 Página Inicial", use_container_width=True):
-        st.session_state.mostrar_filtros = False
-        st.session_state.dados_inseridos = False
-        st.rerun()
-    
+        st.switch_page("app.py")
+
     if st.button("📊 Previsões", use_container_width=True):
-        st.info("🚧 Funcionalidade em desenvolvimento")
+        st.switch_page("pages/previsoes.py")
     
     # Indicador de status
     st.markdown("---")

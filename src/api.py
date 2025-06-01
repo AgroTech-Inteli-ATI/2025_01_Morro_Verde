@@ -4,15 +4,17 @@ import google.generativeai as genai
 import json
 import os
 from datetime import datetime
+from dotenv import load_dotenv
 #from db_pos import limpar_bd
 
 # ======================= CONFIGURAÇÃO =======================
-GEMINI_API_KEY = "AIzaSyDgvxDR1UI1BgwaTsBbK2lJPJnDGWLce-M"
+load_dotenv()  # carrega as variáveis do .env
+api_key = os.getenv("API_KEY")
 CAMINHO_PDF = "relatorio.pdf"
 NOME_ARQUIVO = os.path.basename(CAMINHO_PDF)
 
 # Configurar Gemini
-genai.configure(api_key=GEMINI_API_KEY)
+genai.configure(api_key=api_key)
 model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
 # ======================= ETAPA 1: LER PDF =======================
