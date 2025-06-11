@@ -3,7 +3,7 @@ import os
 import pandas as pd
 import plotly.express as px
 import sqlite3
-from statsmodels.tsa.api import ExponentialSmoothing
+from prophet import Prophet
 
 # Deve ser o primeiro comando Streamlit
 st.set_page_config(
@@ -49,7 +49,7 @@ st.markdown("Esta seção está reservada para visualizações e modelos prediti
 
 @st.cache_data
 def carregar_dados():
-    conn = sqlite3.connect("morro_verde.db")
+    conn = sqlite3.connect("../morro_verde.db")
     df = pd.read_sql_query('''
         SELECT p.nome_produto AS produto, l.nome AS local, pr.data, pr.preco_min AS preco
         FROM precos pr
@@ -76,17 +76,22 @@ if df_filt.shape[0] < 12:
     st.dataframe(df_filt)
     st.stop()
 
-# Modelo de previsão (Exponential Smoothing)
-serie = df_filt.set_index('data')[['preco']].resample('MS').mean().dropna()
-model = ExponentialSmoothing(serie['preco'], trend='add', seasonal=None)
-model_fit = model.fit()
-forecast = model_fit.forecast(steps=6)
+# Preparar dados para o Prophet
+df_prophet = df_filt[['data', 'preco']].copy()
+df_prophet = df_prophet.rename(columns={'data': 'ds', 'preco': 'y'})
+df_prophet = df_prophet.resample('MS', on='ds').mean(numeric_only=True).dropna().reset_index()
 
-# Gerar DataFrame de previsão
-forecast_df = pd.DataFrame({
-    'data': pd.date_range(start=serie.index[-1] + pd.DateOffset(months=1), periods=6, freq='MS'),
-    'previsao': forecast.values
-})
+# Modelo Prophet
+model = Prophet()
+model.fit(df_prophet)
+
+# Criar dataframe futuro para 6 meses
+future = model.make_future_dataframe(periods=6, freq='MS')
+forecast = model.predict(future)
+
+# Dados de previsão para exibição
+forecast_df = forecast[['ds', 'yhat']].tail(6)
+forecast_df = forecast_df.rename(columns={'ds': 'data', 'yhat': 'previsao'})
 
 # Gráfico
 st.subheader(f"📊 Histórico + Previsão para {produto} em {local}")
