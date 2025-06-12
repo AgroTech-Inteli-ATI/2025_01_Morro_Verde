@@ -14,6 +14,10 @@ from uuid import uuid4  # coloque no início do arquivo, se ainda não estiver
 import threading
 import json
 
+st.write("📁 Arquivos disponíveis no deploy:")
+for root, dirs, files in os.walk("."):
+    st.write(f"{root}: {files}")
+
 def ler_progresso_do_arquivo():
     try:
         with open("progresso.json", "r") as f:
@@ -53,7 +57,7 @@ hide_pages = """
 st.markdown(hide_pages, unsafe_allow_html=True)
 
 
-DB_PATH = 'morro_verde.db'
+DB_PATH = 'src/morro_verde.db'
 logo_path = "img/logo-morro-verde.png"
 
 
