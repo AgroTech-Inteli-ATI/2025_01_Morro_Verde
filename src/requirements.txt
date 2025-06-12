@@ -1,0 +1,25 @@
+# Framework principal
+streamlit
+
+# Manipulação de dados
+pandas
+numpy
+
+# Visualização
+plotly
+
+# Machine Learning
+scikit-learn
+prophet
+
+# PDF e extração
+PyMuPDF
+
+# Google Generative AI
+google-generativeai
+
+# Variáveis de ambiente
+python-dotenv
+
+# Outros
+tqdm
