@@ -25,10 +25,6 @@ st.set_page_config(
     }
 )
 
-st.write("📁 Arquivos disponíveis no deploy:")
-for root, dirs, files in os.walk("."):
-    st.write(f"{root}: {files}")
-
 def ler_progresso_do_arquivo():
     try:
         with open("progresso.json", "r") as f:
