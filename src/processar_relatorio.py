@@ -7,11 +7,20 @@ def processar_relatorio(
     usar_json_salvo: bool = False,
     caminho_json_salvo: str = "saida_gemini3.json",
     callback_progresso=None,
-    num_partes: int = 15  # Novo parâmetro para controlar quantas divisões fazer
+    num_partes: int = 15
 ):
-    def atualizar_progresso(p):
+    def atualizar_progresso(p, mensagem=None):
         if callback_progresso:
             callback_progresso(p)
+        # 🆕 Salva progresso e mensagem em arquivo
+        try:
+            with open("progresso.json", "w") as f:
+                json.dump({
+                    "progresso": p,
+                    "mensagem": mensagem or ""
+                }, f)
+        except Exception as e:
+            print(f"[ERRO ao salvar progresso.json]: {e}")
 
     # Caso esteja reaproveitando um JSON salvo
     if usar_json_salvo and os.path.exists(caminho_json_salvo):
@@ -20,14 +29,15 @@ def processar_relatorio(
     else:
         texto = ler_pdf(caminho_pdf)
         tamanho = len(texto)
-        divisao = min(num_partes, tamanho)  # Evita dividir mais do que o necessário
+        divisao = min(num_partes, tamanho)
         decimo = tamanho // divisao
         partes = [texto[i * decimo: (i + 1) * decimo] for i in range(divisao - 1)]
         partes.append(texto[(divisao - 1) * decimo:])
 
         dados_partes = []
         for i, parte in enumerate(partes, 1):
-            print(f"Processando parte {i}/{divisao} com Gemini...")
+            msg = f"Processando parte {i}/{divisao} com Gemini..."
+            print(msg)
             try:
                 dados = gerar_json_estruturado(parte)
                 dados_partes.append(dados)
@@ -35,11 +45,11 @@ def processar_relatorio(
                 print(f"Erro ao processar parte {i}: {e}")
 
             progresso = int(i / divisao * 100)
-            atualizar_progresso(progresso)
+            atualizar_progresso(progresso, mensagem=msg)
 
         dados_json = combinar_json(*dados_partes)
 
-    # Insere os dados extraídos no banco
     inserir_dados_no_banco(dados_json)
-    print("✅ Dados inseridos com sucesso no banco morro_verde.db!")
-    atualizar_progresso(100)
+    msg_final = "✅ Dados inseridos com sucesso no banco morro_verde.db!"
+    print(msg_final)
+    atualizar_progresso(100, mensagem=msg_final)
