@@ -14,6 +14,17 @@ from uuid import uuid4  # coloque no início do arquivo, se ainda não estiver
 import threading
 import json
 
+st.set_page_config(
+    page_title="Dashboard Morro Verde",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        'About': None,
+        'Get Help': None,
+        'Report a bug': None
+    }
+)
+
 st.write("📁 Arquivos disponíveis no deploy:")
 for root, dirs, files in os.walk("."):
     st.write(f"{root}: {files}")
@@ -35,16 +46,6 @@ def atualizar_progresso_seguro(p):
         progresso_compartilhado["valor"] = p
 
 
-st.set_page_config(
-    page_title="Dashboard Morro Verde",
-    layout="wide",
-    initial_sidebar_state="expanded",
-    menu_items={
-        'About': None,
-        'Get Help': None,
-        'Report a bug': None
-    }
-)
 
 # Esconde o seletor de páginas padrão
 hide_pages = """
@@ -57,7 +58,7 @@ hide_pages = """
 st.markdown(hide_pages, unsafe_allow_html=True)
 
 
-DB_PATH = 'src/morro_verde.db'
+DB_PATH = os.path.join(os.path.dirname(__file__), 'morro_verde.db')
 logo_path = "img/logo-morro-verde.png"
 
 
