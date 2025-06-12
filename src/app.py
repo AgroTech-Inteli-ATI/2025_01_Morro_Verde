@@ -5,13 +5,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from processar_relatorio import processar_relatorio
-import threading  
 import time        
 from streamlit_autorefresh import st_autorefresh
 from database_utils import salvar_preco_manual, salvar_frete_manual
 import os
 from uuid import uuid4  # coloque no início do arquivo, se ainda não estiver
-import threading
 import json
 
 st.set_page_config(
@@ -32,15 +30,6 @@ def ler_progresso_do_arquivo():
             return data.get("progresso", 0), data.get("mensagem", "")
     except:
         return 0, ""
-
-# Variável global segura para progresso
-progresso_compartilhado = {"valor": 0}
-progresso_lock = threading.Lock()
-
-def atualizar_progresso_seguro(p):
-    with progresso_lock:
-        progresso_compartilhado["valor"] = p
-
 
 
 # Esconde o seletor de páginas padrão
@@ -103,36 +92,6 @@ if 'processamento_concluido' not in st.session_state:
     st.session_state.processamento_concluido = False
 if 'erro_processamento' not in st.session_state:
     st.session_state.erro_processamento = None
-
-def threaded_processar_relatorio(caminho_pdf, num_partes):
-    # Marca que o processamento começou
-    st.session_state.relatorio_em_processamento = True
-    st.session_state.processamento_concluido = False
-    st.session_state.erro_processamento = None
-    st.session_state.progresso_relatorio = 0
-
-    def executar_processamento():
-        try:
-            # Função principal de processamento, com callback para progresso
-            def progresso_callback(p):
-                st.session_state.progresso_relatorio = p
-
-            processar_relatorio(
-                caminho_pdf,
-                callback_progresso=progresso_callback,
-                num_partes=num_partes
-            )
-
-            st.session_state.processamento_concluido = True
-        except Exception as e:
-            st.session_state.erro_processamento = str(e)
-        finally:
-            st.session_state.relatorio_em_processamento = False
-            st.session_state.progresso_relatorio = 100  # Garante que a barra encha visualmente
-
-    # Executa o processamento em thread
-    thread = threading.Thread(target=executar_processamento)
-    thread.start()
 
 
 # Função para input manual de dados
@@ -249,24 +208,36 @@ with col2:
     if st.button("📥 IMPORTAR RELATÓRIO", use_container_width=True) and uploaded_file is not None:
         os.makedirs("relatorios", exist_ok=True)
         caminho_pdf = "relatorios/relatorio_temp.pdf"
-        
+
         with open(caminho_pdf, "wb") as f:
             f.write(uploaded_file.getbuffer())
 
-        # 🔄 Limpa o progresso anterior (caso exista)
+        # 🔄 Limpa progresso anterior (se existir)
         if os.path.exists("progresso.json"):
             os.remove("progresso.json")
 
-        # Sempre crie nova thread ao importar, mesmo que seja o mesmo arquivo
-        nova_thread = threading.Thread(target=threaded_processar_relatorio, args=(caminho_pdf, num_partes))
-        nova_thread.start()
+        progress_bar = st.progress(0)
 
-        # ⚠️ Atualize o session_state corretamente
-        st.session_state.relatorio_em_processamento = True
-        st.session_state.processamento_concluido = False
-        st.session_state.erro_processamento = None
-        st.session_state.progresso_relatorio = 0
-        st.session_state.thread = nova_thread
+        with st.status("🔄 Processando relatório...", expanded=True) as status:
+            try:
+                processar_relatorio(
+                    caminho_pdf,
+                    usar_json_salvo=False,
+                    caminho_json_salvo="saida_gemini3.json",
+                    callback_progresso=lambda p: (
+                        st.session_state.update({"progresso_relatorio": p}),
+                        progress_bar.progress(p / 100)
+                    ),
+                    num_partes=num_partes
+                )
+                st.session_state.relatorio_em_processamento = False
+                st.session_state.processamento_concluido = True
+                status.update(label="✅ Relatório processado com sucesso!", state="complete")
+            except Exception as e:
+                st.session_state.relatorio_em_processamento = False
+                st.session_state.erro_processamento = str(e)
+                status.update(label=f"❌ Erro: {e}", state="error")
+
 
 
 with col3:
@@ -290,12 +261,13 @@ if st.session_state.get("relatorio_em_processamento", False):
         st.session_state.processamento_concluido = True
         st.rerun()
 
-elif st.session_state.get("processamento_concluido", False):
+if st.session_state.get("processamento_concluido", False):
     st.success("✅ Relatório processado com sucesso!")
     st.info("🔄 Atualize a página para ver as mudanças nos gráficos e dados.")
 
 elif st.session_state.get("erro_processamento"):
     st.error(f"❌ Erro no processamento: {st.session_state.erro_processamento}")
+
 
 # Mostrar formulário de input se solicitado
 if st.session_state.dados_inseridos:
