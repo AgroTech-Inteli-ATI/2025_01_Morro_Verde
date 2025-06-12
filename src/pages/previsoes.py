@@ -48,7 +48,8 @@ aba = st.radio("Escolha o que deseja prever:", ["Preço", "Frete", "Barter Ratio
 
 @st.cache_data
 def carregar_dados_preco():
-    conn = sqlite3.connect("morro_verde.db")
+    DB_PATH = os.path.join(os.path.dirname(__file__), '..', 'morro_verde.db')
+    conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query("""
         SELECT p.nome_produto AS produto, l.nome AS local, pr.data, pr.preco_min AS preco
         FROM precos pr
