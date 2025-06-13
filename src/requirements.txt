@@ -1,0 +1,9 @@
+streamlit
+pandas
+plotly
+prophet
+PyMuPDF
+google-generativeai
+python-dotenv
+scikit-learn
+streamlit-autorefresh
