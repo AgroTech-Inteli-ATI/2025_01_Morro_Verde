@@ -31,18 +31,16 @@ def processar_relatorio(
         except Exception as e:
             logger_visual(f"[ERRO ao salvar progresso.json]: {e}")
 
-    # 🔄 Limpa o log no início
+    # Limpa o log no início
     if os.path.exists("log_streamlit.txt"):
         os.remove("log_streamlit.txt")
     logger_visual("🚀 Iniciando processamento do relatório...")
 
-    # ▶️ Usa JSON salvo se existir
     if usar_json_salvo and os.path.exists(caminho_json_salvo):
         logger_visual("📂 Usando JSON salvo.")
         with open(caminho_json_salvo, "r", encoding="utf-8") as f:
             dados_json = json.load(f)
     else:
-        print('funciona')
         texto = ler_pdf(caminho_pdf)
         tamanho = len(texto)
         divisao = min(num_partes, tamanho)
