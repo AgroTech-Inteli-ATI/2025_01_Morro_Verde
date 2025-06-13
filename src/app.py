@@ -238,7 +238,10 @@ with col2:
                 st.session_state.erro_processamento = str(e)
                 status.update(label=f"❌ Erro: {e}", state="error")
 
-
+if os.path.exists("log_streamlit.txt"):
+    with open("log_streamlit.txt", "r", encoding="utf-8") as f:
+        log_conteudo = f.read()
+    st.expander("📄 Log do processamento").code(log_conteudo)
 
 with col3:
     if st.button("📝 INPUTAR DADOS", use_container_width=True):
