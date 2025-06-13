@@ -7,8 +7,10 @@ def logger_visual(msg):
     try:
         with open("log_streamlit.txt", "a", encoding="utf-8") as f:
             f.write(msg + "\n")
+        print(msg)  # 👈 Força print no terminal (para Streamlit local)
     except Exception as e:
         print(f"[Logger erro]: {e}")
+
 
 
 def processar_relatorio(

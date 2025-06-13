@@ -663,3 +663,9 @@ with col_tab2:
 # Rodapé
 st.markdown("---")
 st.markdown("**Dashboard Morro Verde** - Análise de Concorrência | Dados atualizados em tempo real")
+
+if os.path.exists("log_streamlit.txt"):
+    with st.expander("📄 Log do processamento"):
+        with open("log_streamlit.txt", "r", encoding="utf-8") as f:
+            conteudo = f.read()
+            st.code(conteudo)
