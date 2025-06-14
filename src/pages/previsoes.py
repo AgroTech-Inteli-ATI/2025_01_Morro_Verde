@@ -220,23 +220,20 @@ st.subheader("🔧 Parâmetros da previsão")
 produto = st.selectbox("Produto", sorted(df['nome_produto'].dropna().unique()))
 df_prod = df[df['nome_produto'] == produto]
 
+if df_prod.empty or df_prod['local'].dropna().empty or len(df_prod) < 10:
+    st.warning(
+        "📦 Ainda não é possível gerar previsões para este produto.\n\n"
+        "É necessário pelo menos **10 registros históricos com origem válida** para ativar o modelo."
+    )
+    st.stop()
+
 origens = df_prod['local'].unique()
 origem = st.selectbox("Origem (porto)", sorted(origens))
-filtro_origem = df_prod[df_prod['local'] == origem]
-if filtro_origem.empty:
-    st.error(f"❌ Local de origem '{origem}' não encontrado.")
-    st.stop()
-origem_id = filtro_origem['local_id'].iloc[0]
-
+origem_id = df_prod[df_prod['local'] == origem]['local_id'].iloc[0]
 
 destinos = locais[locais['id'] != origem_id]
 destino_nome = st.selectbox("Destino (cliente)", sorted(destinos['nome']))
-filtro_destino = destinos[destinos['nome'] == destino_nome]
-if filtro_destino.empty:
-    st.error(f"❌ Destino '{destino_nome}' não encontrado na base.")
-    st.stop()
-destino_id = filtro_destino['id'].iloc[0]
-
+destino_id = destinos[destinos['nome'] == destino_nome]['id'].iloc[0]
 
 meses_futuros = st.slider("Meses futuros para prever:", min_value=1, max_value=12, value=6)
 
@@ -254,10 +251,6 @@ df_merge['custo_usd'] = df_merge['custo_usd'].fillna(0)
 df_merge['frete_final'] = df_merge['custo_brl'] + (df_merge['custo_usd'] * df_merge['usd_brl'])
 df_merge['valor_entregue'] = df_merge['preco_min'] + df_merge['frete_final']
 
-if len(df_merge) < 10:
-    st.warning("⚠️ Dados insuficientes para previsão robusta com esse filtro (mínimo 30 registros).")
-    st.dataframe(df_merge)
-    st.stop()
 
 # Detecção e remoção de outliers
 df_merge_clean = detectar_outliers(df_merge, 'valor_entregue', 'iqr')
