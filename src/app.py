@@ -15,6 +15,7 @@ import threading
 import json
 import shutil
 import statsmodels.api as sm
+import glob
 
 st.set_page_config(
     page_title="Dashboard Morro Verde",
@@ -89,15 +90,43 @@ def carregar_dados():
     conn.close()
     return df_precos, df_fretes, df_barter
 
-def criar_backup():
-    if os.path.exists(DB_PATH):
-        shutil.copy(DB_PATH, "backup_rollback.db")
+def criar_backup(max_backups=5):
+    os.makedirs("backups", exist_ok=True)
 
-def restaurar_backup():
-    if os.path.exists("backup_rollback.db"):
-        shutil.copy("backup_rollback.db", DB_PATH)
-        return True
-    return False
+    # 1. Descobre o próximo número
+    i = 1
+    while os.path.exists(f"backups/backup_rollback_{i}.db"):
+        i += 1
+
+    # 2. Cria novo backup
+    shutil.copy(DB_PATH, f"backups/backup_rollback_{i}.db")
+
+    # 3. Limpa backups antigos, mantém os `max_backups` mais recentes
+    backups = sorted(
+        glob.glob("backups/backup_rollback_*.db"),
+        key=lambda x: int(x.split("_")[-1].split(".")[0])
+    )
+
+    while len(backups) > max_backups:
+        os.remove(backups[0])
+        backups.pop(0)
+
+
+def restaurar_backup_mais_recente():
+    backups = sorted(
+        glob.glob("backups/backup_rollback_*.db"),
+        key=lambda x: int(x.split("_")[-1].split(".")[0])
+    )
+
+    if not backups:
+        return False
+
+    # Restaura o mais recente
+    mais_recente = backups[-1]
+    shutil.copy(mais_recente, DB_PATH)
+    os.remove(mais_recente)
+    return True
+
 
 def registrar_acao(descricao):
     log = []
@@ -719,14 +748,14 @@ st.markdown("**Dashboard Morro Verde** - Análise de Concorrência | Dados atual
 st.markdown("---")
 st.markdown("### ⏪ Deseja desfazer a última atualização?")
 
-if os.path.exists("backup_rollback.db"):
+if os.path.exists("backups"):
     if st.button("Desfazer Última Atualização", use_container_width=True):
-        if restaurar_backup():
+        if restaurar_backup_mais_recente():
             if os.path.exists("acoes_realizadas.json"):
                 with open("acoes_realizadas.json", "r") as f:
                     log = json.load(f)
                 if log:
-                    log.pop()  # Remove a última ação
+                    log.pop()  # Remove a última ação do histórico
                     with open("acoes_realizadas.json", "w") as f:
                         json.dump(log, f)
             st.success("✅ Banco de dados restaurado com sucesso!")
@@ -739,4 +768,5 @@ if os.path.exists("acoes_realizadas.json"):
         st.markdown("#### 📚 Histórico de alterações no banco:")
         for acao in reversed(acoes[-5:]):
             st.markdown(f"- {acao}")
+
 
