@@ -9,4 +9,5 @@ scikit-learn
 streamlit-autorefresh
 xgboost
 numpy
+statsmodels
 scipy

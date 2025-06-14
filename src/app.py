@@ -14,6 +14,7 @@ from uuid import uuid4  # coloque no início do arquivo, se ainda não estiver
 import threading
 import json
 import shutil
+import statsmodels.api as sm
 
 st.set_page_config(
     page_title="Dashboard Morro Verde",
@@ -595,7 +596,6 @@ else:
 # Análise Sazonal (melhorada)
 st.subheader("📅 Análise Sazonal dos Preços")
 try:
-    import statsmodels.api as sm
     
     ts_data = df_precos_filt.copy()
     ts_data['ano_mes'] = ts_data['data_preco'].dt.to_period('M')
