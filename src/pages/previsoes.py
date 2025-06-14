@@ -222,11 +222,21 @@ df_prod = df[df['nome_produto'] == produto]
 
 origens = df_prod['local'].unique()
 origem = st.selectbox("Origem (porto)", sorted(origens))
-origem_id = df_prod[df_prod['local'] == origem]['local_id'].iloc[0]
+filtro_origem = df_prod[df_prod['local'] == origem]
+if filtro_origem.empty:
+    st.error(f"❌ Local de origem '{origem}' não encontrado.")
+    st.stop()
+origem_id = filtro_origem['local_id'].iloc[0]
+
 
 destinos = locais[locais['id'] != origem_id]
 destino_nome = st.selectbox("Destino (cliente)", sorted(destinos['nome']))
-destino_id = destinos[destinos['nome'] == destino_nome]['id'].iloc[0]
+filtro_destino = destinos[destinos['nome'] == destino_nome]
+if filtro_destino.empty:
+    st.error(f"❌ Destino '{destino_nome}' não encontrado na base.")
+    st.stop()
+destino_id = filtro_destino['id'].iloc[0]
+
 
 meses_futuros = st.slider("Meses futuros para prever:", min_value=1, max_value=12, value=6)
 
@@ -356,8 +366,16 @@ last_ano = int(last_row['ano'])
 
 # Análise de tendência mais sofisticada
 recent_data = df_clean.tail(12)  # últimos 12 meses
-if len(recent_data) >= 6:
-    tendencia_percentual = (recent_data['valor_entregue'].iloc[-1] / recent_data['valor_entregue'].iloc[0]) ** (1/len(recent_data)) - 1
+if len(recent_data) >= 2:
+    primeiro_valor = recent_data['valor_entregue'].iloc[0]
+    ultimo_valor = recent_data['valor_entregue'].iloc[-1]
+
+    # Evita divisão por zero
+    if primeiro_valor != 0:
+        tendencia_percentual = (ultimo_valor / primeiro_valor) ** (1 / len(recent_data)) - 1
+    else:
+        tendencia_percentual = 0
+
     volatilidade_historica = recent_data['valor_entregue'].pct_change().std()
 else:
     tendencia_percentual = 0
