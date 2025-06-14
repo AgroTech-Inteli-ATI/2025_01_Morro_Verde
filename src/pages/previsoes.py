@@ -220,6 +220,13 @@ st.subheader("🔧 Parâmetros da previsão")
 produto = st.selectbox("Produto", sorted(df['nome_produto'].dropna().unique()))
 df_prod = df[df['nome_produto'] == produto]
 
+if df_prod.empty or df_prod['local'].dropna().empty or len(df_prod) < 10:
+    st.warning(
+        "📦 Ainda não é possível gerar previsões para este produto.\n\n"
+        "É necessário pelo menos **10 registros históricos com origem válida** para ativar o modelo."
+    )
+    st.stop()
+
 origens = df_prod['local'].unique()
 origem = st.selectbox("Origem (porto)", sorted(origens))
 origem_id = df_prod[df_prod['local'] == origem]['local_id'].iloc[0]
@@ -244,10 +251,6 @@ df_merge['custo_usd'] = df_merge['custo_usd'].fillna(0)
 df_merge['frete_final'] = df_merge['custo_brl'] + (df_merge['custo_usd'] * df_merge['usd_brl'])
 df_merge['valor_entregue'] = df_merge['preco_min'] + df_merge['frete_final']
 
-if len(df_merge) < 10:
-    st.warning("⚠️ Dados insuficientes para previsão robusta com esse filtro (mínimo 30 registros).")
-    st.dataframe(df_merge)
-    st.stop()
 
 # Detecção e remoção de outliers
 df_merge_clean = detectar_outliers(df_merge, 'valor_entregue', 'iqr')
@@ -356,8 +359,16 @@ last_ano = int(last_row['ano'])
 
 # Análise de tendência mais sofisticada
 recent_data = df_clean.tail(12)  # últimos 12 meses
-if len(recent_data) >= 6:
-    tendencia_percentual = (recent_data['valor_entregue'].iloc[-1] / recent_data['valor_entregue'].iloc[0]) ** (1/len(recent_data)) - 1
+if len(recent_data) >= 2:
+    primeiro_valor = recent_data['valor_entregue'].iloc[0]
+    ultimo_valor = recent_data['valor_entregue'].iloc[-1]
+
+    # Evita divisão por zero
+    if primeiro_valor != 0:
+        tendencia_percentual = (ultimo_valor / primeiro_valor) ** (1 / len(recent_data)) - 1
+    else:
+        tendencia_percentual = 0
+
     volatilidade_historica = recent_data['valor_entregue'].pct_change().std()
 else:
     tendencia_percentual = 0
