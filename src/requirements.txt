@@ -6,4 +6,5 @@ PyMuPDF
 google-generativeai
 python-dotenv
 scikit-learn
+shutil
 streamlit-autorefresh

@@ -13,6 +13,7 @@ import os
 from uuid import uuid4  # coloque no início do arquivo, se ainda não estiver
 import threading
 import json
+import shutil
 
 st.set_page_config(
     page_title="Dashboard Morro Verde",
@@ -87,6 +88,15 @@ def carregar_dados():
     conn.close()
     return df_precos, df_fretes, df_barter
 
+def criar_backup():
+    if os.path.exists(DB_PATH):
+        shutil.copy(DB_PATH, "backup_rollback.db")
+
+def restaurar_backup():
+    if os.path.exists("backup_rollback.db"):
+        shutil.copy("backup_rollback.db", DB_PATH)
+        return True
+    return False
 
 # Inicializar session state
 if 'filtros_aplicados' not in st.session_state:
@@ -252,6 +262,8 @@ with col2:
         
         with open(caminho_pdf, "wb") as f:
             f.write(uploaded_file.getbuffer())
+
+        criar_backup()  # Cria backup antes de processar
 
         # 🔄 Limpa o progresso anterior (caso exista)
         if os.path.exists("progresso.json"):
@@ -688,3 +700,14 @@ with col_tab2:
 # Rodapé
 st.markdown("---")
 st.markdown("**Dashboard Morro Verde** - Análise de Concorrência | Dados atualizados em tempo real")
+
+st.markdown("---")
+st.markdown("### ⏪ Deseja desfazer a última importação?")
+
+if os.path.exists("backup_rollback.db"):
+    if st.button("Desfazer Última Atualização", use_container_width=True):
+        if restaurar_backup():
+            st.success("✅ Banco de dados restaurado com sucesso!")
+            st.rerun()
+        else:
+            st.error("❌ Nenhum backup encontrado para restaurar.")
