@@ -99,6 +99,16 @@ def restaurar_backup():
         return True
     return False
 
+def registrar_acao(descricao):
+    log = []
+    if os.path.exists("acoes_realizadas.json"):
+        with open("acoes_realizadas.json", "r") as f:
+            log = json.load(f)
+    log.append(descricao)
+    with open("acoes_realizadas.json", "w") as f:
+        json.dump(log, f)
+
+
 # Inicializar session state
 if 'filtros_aplicados' not in st.session_state:
     st.session_state.filtros_aplicados = False
@@ -182,20 +192,22 @@ def mostrar_formulario_input():
                 st.error("❌ Preencha todos os campos obrigatórios de preço: Produto, Localização e Preço > 0")
                 return
             
+            criar_backup()
+
             # Salvar preço
             sucesso_preco, msg_preco = salvar_preco_manual(produto, localizacao, preco, moeda, data_preco)
-            
+
             if submitted_completo:
                 # Validação para frete também
                 if not origem or not destino or custo_frete <= 0:
                     st.error("❌ Para salvar frete também, preencha: Origem, Destino e Custo > 0")
                     return
-                    
+
                 sucesso_frete, msg_frete = salvar_frete_manual(origem, destino, custo_frete, "USD", data_frete)
-                
+
                 if sucesso_preco and sucesso_frete:
                     st.success("✅ Preço e Frete salvos com sucesso!")
-                    
+                    registrar_acao("✍️ Novo dado inputado manualmente: preço e frete.")
                 else:
                     if not sucesso_preco:
                         st.error(f"❌ Erro ao salvar preço: {msg_preco}")
@@ -204,9 +216,10 @@ def mostrar_formulario_input():
             else:
                 if sucesso_preco:
                     st.success("✅ Preço salvo com sucesso!")
-                    
+                    registrar_acao("✍️ Novo dado inputado manualmente: apenas preço.")
                 else:
                     st.error(f"❌ Erro ao salvar preço: {msg_preco}")
+
 
             time.sleep(2)
             st.rerun()
@@ -265,6 +278,7 @@ with col2:
             f.write(uploaded_file.getbuffer())
 
         criar_backup()  # Cria backup antes de processar
+        registrar_acao(f"📄 {uploaded_file.name} importado!")
 
         # 🔄 Limpa o progresso anterior (caso exista)
         if os.path.exists("progresso.json"):
@@ -697,17 +711,32 @@ with col_tab2:
     else:
         st.info("Nenhum dado de fretes disponível.")
 
-# Rodapé
+# Rodapé visual
 st.markdown("---")
 st.markdown("**Dashboard Morro Verde** - Análise de Concorrência | Dados atualizados em tempo real")
 
+# Seção de Desfazer e Histórico de Ações
 st.markdown("---")
-st.markdown("### ⏪ Deseja desfazer a última importação?")
+st.markdown("### ⏪ Deseja desfazer a última atualização?")
 
 if os.path.exists("backup_rollback.db"):
     if st.button("Desfazer Última Atualização", use_container_width=True):
         if restaurar_backup():
+            if os.path.exists("acoes_realizadas.json"):
+                with open("acoes_realizadas.json", "r") as f:
+                    log = json.load(f)
+                if log:
+                    log.pop()  # Remove a última ação
+                    with open("acoes_realizadas.json", "w") as f:
+                        json.dump(log, f)
             st.success("✅ Banco de dados restaurado com sucesso!")
             st.rerun()
-        else:
-            st.error("❌ Nenhum backup encontrado para restaurar.")
+
+if os.path.exists("acoes_realizadas.json"):
+    with open("acoes_realizadas.json", "r") as f:
+        acoes = json.load(f)
+    if acoes:
+        st.markdown("#### 📚 Histórico de alterações no banco:")
+        for acao in reversed(acoes[-5:]):
+            st.markdown(f"- {acao}")
+
