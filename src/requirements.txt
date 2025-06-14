@@ -10,3 +10,4 @@ streamlit-autorefresh
 xgboost
 numpy
 scipy
+shutil
