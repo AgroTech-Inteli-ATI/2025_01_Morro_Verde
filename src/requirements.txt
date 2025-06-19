@@ -13,3 +13,4 @@ statsmodels
 scipy
 SQLAlchemy
 psycopg2-binary
+
