@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
+from sqlalchemy import create_engine, text
+from dotenv import load_dotenv
 import os
 from datetime import timedelta
 from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
@@ -16,6 +17,11 @@ import numpy as np
 from scipy import stats
 import warnings
 warnings.filterwarnings('ignore')
+
+# Load .env
+load_dotenv()
+DATABASE_URL = os.getenv("DATABASE_URL")
+engine = create_engine(DATABASE_URL)
 
 # Configuração da página
 st.set_page_config(
@@ -56,8 +62,6 @@ st.title("📈 Página de Previsões")
 
 @st.cache_data
 def carregar_dados():
-    conn = sqlite3.connect(os.path.join(os.path.dirname(__file__), '..', 'morro_verde.db'))
-
     df = pd.read_sql_query("""
         SELECT pr.data, pr.preco_min, pr.variacao, pr.modalidade, pr.moeda,
                p.nome_produto, p.formulacao, p.origem AS origem_produto, p.tipo AS tipo_produto, p.unidade,
@@ -68,16 +72,15 @@ def carregar_dados():
         JOIN locais l ON pr.local_id = l.id
         LEFT JOIN cambio c ON pr.data = c.data
         LEFT JOIN custos_portos co ON co.data = pr.data AND co.porto_id = l.id
-    """, conn)
+    """, engine)
 
     fretes = pd.read_sql_query("""
         SELECT data, origem_id, destino_id, tipo, custo_usd, custo_brl
         FROM fretes
-    """, conn)
+    """, engine)
 
-    locais = pd.read_sql_query("SELECT id, nome FROM locais", conn)
+    locais = pd.read_sql_query("SELECT id, nome FROM locais", engine)
     
-    conn.close()
     df['data'] = pd.to_datetime(df['data'])
     df['mes'] = df['data'].dt.month
     df['ano'] = df['data'].dt.year

@@ -11,3 +11,5 @@ xgboost
 numpy
 statsmodels
 scipy
+SQLAlchemy
+psycopg2-binary
