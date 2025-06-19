@@ -443,7 +443,7 @@ if df_precos.empty and df_fretes.empty:
     st.markdown("""
     - Use o botão **📝 INPUTAR DADOS** para adicionar dados manualmente
     - Use o botão **📥 IMPORTAR RELATÓRIO** para processar um PDF
-    - Verifique se o banco de dados foi criado corretamente
+    - Em "Partes", considere que quanto maior o relatório, mais partes você deve dividi-lo para evitar erros de processamento.
     """)
     st.stop()
 
