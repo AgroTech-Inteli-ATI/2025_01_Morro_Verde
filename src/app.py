@@ -6,7 +6,6 @@ from datetime import datetime
 from processar_relatorio import processar_relatorio
 import threading  
 import time        
-from streamlit_autorefresh import st_autorefresh
 from database_utils import salvar_preco_manual, salvar_frete_manual
 import os
 from uuid import uuid4  # coloque no início do arquivo, se ainda não estiver

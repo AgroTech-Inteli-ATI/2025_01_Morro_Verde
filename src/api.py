@@ -1,9 +1,7 @@
 import fitz
-import sqlite3
 import google.generativeai as genai
 import json
 import os
-from datetime import datetime
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
