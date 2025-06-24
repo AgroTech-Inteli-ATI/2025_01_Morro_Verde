@@ -1,7 +1,7 @@
 ---
-title: Overview
 sidebar_position: 1
 slug: /
+description: "Apresentação do projeto Dashboard Morro Verde"
 ---
 
 # Apresentação
