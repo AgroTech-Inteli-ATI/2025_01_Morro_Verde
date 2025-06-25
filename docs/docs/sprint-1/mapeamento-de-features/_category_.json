@@ -1,8 +1,0 @@
-{
-  "label": "Mapeamento de Funcionalidades",
-  "position": 4,
-  "link": {
-    "type": "generated-index",
-    "description": "Mapeia as funcionalidades essenciais para a análise de precificação e detalha os tipos de dados e seus métodos de coleta e tratamento.",
-  }
-}

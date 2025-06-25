@@ -1,0 +1,15 @@
+streamlit
+pandas
+plotly
+prophet
+PyMuPDF
+google-generativeai
+python-dotenv
+scikit-learn
+streamlit-autorefresh
+xgboost
+numpy
+statsmodels
+scipy
+SQLAlchemy
+psycopg2-binary
