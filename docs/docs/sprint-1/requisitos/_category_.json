@@ -1,8 +1,0 @@
-{
-  "label": "Levantamento de Requisitos",
-  "position": 1,
-  "link": {
-    "type": "generated-index",
-    "description": "Contém a documentação detalhada dos requisitos funcionais e não funcionais do sistema, definindo o escopo da solução a ser desenvolvida.",
-  }
-}
