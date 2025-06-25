@@ -5,7 +5,7 @@ import os
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
-
+    
 # ======================= CONFIGURAÇÃO =======================
 load_dotenv()  # carrega as variáveis do .env
 api_key = os.getenv("API_KEY")
