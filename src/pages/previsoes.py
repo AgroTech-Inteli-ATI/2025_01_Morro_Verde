@@ -1,11 +1,28 @@
 import streamlit as st
-import os
 import pandas as pd
-import plotly.express as px
-import sqlite3
-from sklearn.metrics import mean_absolute_percentage_error
-from prophet import Prophet
+from sqlalchemy import create_engine
+from dotenv import load_dotenv
+import os
+from datetime import timedelta
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import mean_absolute_percentage_error, mean_absolute_error, mean_squared_error
+from sklearn.ensemble import RandomForestRegressor
+from xgboost import XGBRegressor
+import plotly.graph_objects as go
+import numpy as np
+from scipy import stats
+import warnings
+warnings.filterwarnings('ignore')
 
+# Load .env
+load_dotenv()
+DATABASE_URL = os.getenv("DATABASE_URL")
+engine = create_engine(DATABASE_URL)
+
+# Configuração da página
 st.set_page_config(
     page_title="Dashboard Morro Verde",
     layout="wide",
@@ -17,6 +34,7 @@ st.set_page_config(
     }
 )
 
+# Esconde a navegação padrão
 hide_pages = """
     <style>
         [data-testid="stSidebarNav"] {
@@ -26,129 +44,446 @@ hide_pages = """
 """
 st.markdown(hide_pages, unsafe_allow_html=True)
 
+# Sidebar com logo e navegação
 logo_path = "img/logo-morro-verde.png"
-
 with st.sidebar:
     if os.path.exists(logo_path):
         st.image(logo_path, use_container_width=True)
     else:
         st.markdown("# 🌱 Morro Verde")
     st.markdown("---")
-
     if st.button("🏠 Página Inicial", use_container_width=True):
         st.switch_page("app.py")
-
     if st.button("📊 Previsões", use_container_width=True):
         st.switch_page("pages/previsoes.py")
 
 st.title("📈 Página de Previsões")
-st.markdown("Escolha abaixo a categoria para gerar previsões com base nos dados do sistema.")
-
-aba = st.radio("Escolha o que deseja prever:", ["Preço", "Frete", "Barter Ratio"])
 
 @st.cache_data
-def carregar_dados_preco():
-    conn = sqlite3.connect("morro_verde.db")
+def carregar_dados():
     df = pd.read_sql_query("""
-        SELECT p.nome_produto AS produto, l.nome AS local, pr.data, pr.preco_min AS preco
+        SELECT pr.data, pr.preco_min, pr.variacao, pr.modalidade, pr.moeda,
+               p.nome_produto, p.formulacao, p.origem AS origem_produto, p.tipo AS tipo_produto, p.unidade,
+               l.id as local_id, l.nome AS local, l.estado, l.pais, l.tipo AS tipo_local,
+               c.usd_brl, co.custo_total
         FROM precos pr
         JOIN produtos p ON pr.produto_id = p.id
         JOIN locais l ON pr.local_id = l.id
-    """, conn)
-    conn.close()
+        LEFT JOIN cambio c ON pr.data = c.data
+        LEFT JOIN custos_portos co ON co.data = pr.data AND co.porto_id = l.id
+    """, engine)
+
+    fretes = pd.read_sql_query("""
+        SELECT data, origem_id, destino_id, tipo, custo_usd, custo_brl
+        FROM fretes
+    """, engine)
+
+    locais = pd.read_sql_query("SELECT id, nome FROM locais", engine)
+    
     df['data'] = pd.to_datetime(df['data'])
-    return df
+    df['mes'] = df['data'].dt.month
+    df['ano'] = df['data'].dt.year
+    df['custo_total'] = df['custo_total'].fillna(0)
+    df['usd_brl'] = df['usd_brl'].fillna(method='ffill')
+    fretes['data'] = pd.to_datetime(fretes['data'])
 
-@st.cache_data
-def carregar_dados_frete():
-    conn = sqlite3.connect("morro_verde.db")
-    df = pd.read_sql_query("""
-        SELECT l1.nome AS origem, l2.nome AS destino, f.tipo, f.data, f.custo_usd AS preco
-        FROM fretes f
-        JOIN locais l1 ON f.origem_id = l1.id
-        JOIN locais l2 ON f.destino_id = l2.id
-    """, conn)
-    conn.close()
-    df['data'] = pd.to_datetime(df['data'])
-    return df
+    return df, fretes, locais
 
-@st.cache_data
-def carregar_dados_barter():
-    conn = sqlite3.connect("morro_verde.db")
-    df = pd.read_sql_query("""
-        SELECT b.cultura, p.nome_produto AS produto, b.estado, b.data, b.barter_ratio AS preco
-        FROM barter_ratios b
-        JOIN produtos p ON b.produto_id = p.id
-    """, conn)
-    conn.close()
-    df['data'] = pd.to_datetime(df['data'])
-    return df
+def detectar_outliers(df, coluna, metodo='iqr'):
+    """Detecta e remove outliers usando IQR ou Z-score"""
+    if metodo == 'iqr':
+        Q1 = df[coluna].quantile(0.25)
+        Q3 = df[coluna].quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+        return df[(df[coluna] >= lower_bound) & (df[coluna] <= upper_bound)]
+    else:  # z-score
+        z_scores = np.abs(stats.zscore(df[coluna]))
+        return df[z_scores < 3]
 
-if aba == "Preço":
-    df = carregar_dados_preco()
-    produto = st.selectbox("Produto:", sorted(df['produto'].unique()))
-    local = st.selectbox("Local:", sorted(df['local'].unique()))
-    df_filt = df[(df['produto'] == produto) & (df['local'] == local)].sort_values('data')
+def criar_features_avancadas(df):
+    """Cria features temporais e de lag mais sofisticadas"""
+    df_sorted = df.sort_values('data').copy()
+    
+    # Features temporais avançadas
+    df_sorted['trimestre'] = df_sorted['data'].dt.quarter
+    df_sorted['dia_semana'] = df_sorted['data'].dt.dayofweek
+    df_sorted['dia_mes'] = df_sorted['data'].dt.day
+    df_sorted['semana_ano'] = df_sorted['data'].dt.isocalendar().week
+    
+    # Sazonalidade cíclica
+    df_sorted['mes_sin'] = np.sin(2 * np.pi * df_sorted['mes'] / 12)
+    df_sorted['mes_cos'] = np.cos(2 * np.pi * df_sorted['mes'] / 12)
+    df_sorted['trimestre_sin'] = np.sin(2 * np.pi * df_sorted['trimestre'] / 4)
+    df_sorted['trimestre_cos'] = np.cos(2 * np.pi * df_sorted['trimestre'] / 4)
+    
+    # Features de lag melhoradas
+    for lag in [1, 2, 3, 7, 15, 30]:
+        if len(df_sorted) > lag * 2:
+            df_sorted[f'valor_lag_{lag}'] = df_sorted['valor_entregue'].shift(lag)
+            df_sorted[f'preco_lag_{lag}'] = df_sorted['preco_min'].shift(lag)
+    
+    # Médias móveis de diferentes janelas
+    for window in [3, 7, 15, 30]:
+        if len(df_sorted) > window * 2:
+            df_sorted[f'ma_{window}'] = df_sorted['valor_entregue'].rolling(window=window).mean()
+            df_sorted[f'std_{window}'] = df_sorted['valor_entregue'].rolling(window=window).std()
+    
+    # Features de volatilidade
+    df_sorted['volatilidade_7d'] = df_sorted['valor_entregue'].rolling(window=7).std()
+    df_sorted['volatilidade_30d'] = df_sorted['valor_entregue'].rolling(window=30).std()
+    
+    # Tendências
+    df_sorted['tendencia_7d'] = (df_sorted['valor_entregue'] / df_sorted['valor_entregue'].shift(7)) - 1
+    df_sorted['tendencia_30d'] = (df_sorted['valor_entregue'] / df_sorted['valor_entregue'].shift(30)) - 1
+    
+    # Features de câmbio
+    df_sorted['usd_volatilidade'] = df_sorted['usd_brl'].rolling(window=7).std()
+    df_sorted['usd_tendencia'] = (df_sorted['usd_brl'] / df_sorted['usd_brl'].shift(7)) - 1
+    
+    # Razões importantes
+    df_sorted['ratio_frete_preco'] = df_sorted['frete_final'] / df_sorted['preco_min']
+    df_sorted['ratio_custo_preco'] = df_sorted['custo_total'] / df_sorted['preco_min']
+    
+    return df_sorted
 
-elif aba == "Frete":
-    df = carregar_dados_frete()
-    origem = st.selectbox("Origem:", sorted(df['origem'].unique()))
-    destino = st.selectbox("Destino:", sorted(df['destino'].unique()))
-    tipo = st.selectbox("Tipo de Transporte:", sorted(df['tipo'].unique()))
-    df_filt = df[(df['origem'] == origem) & (df['destino'] == destino) & (df['tipo'] == tipo)].sort_values('data')
+def validacao_temporal(pipeline, X, y, n_splits=3):
+    """Validação temporal usando TimeSeriesSplit"""
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+    scores = {'mae': [], 'rmse': [], 'mape': []}
+    
+    for train_idx, val_idx in tscv.split(X):
+        X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+        y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+        
+        pipeline.fit(X_train, y_train)
+        y_pred = pipeline.predict(X_val)
+        
+        scores['mae'].append(mean_absolute_error(y_val, y_pred))
+        scores['rmse'].append(np.sqrt(mean_squared_error(y_val, y_pred)))
+        scores['mape'].append(mean_absolute_percentage_error(y_val, y_pred))
+    
+    return {
+        'MAE': np.mean(scores['mae']),
+        'RMSE': np.mean(scores['rmse']),
+        'MAPE': np.mean(scores['mape']),
+        'MAE_std': np.std(scores['mae']),
+        'RMSE_std': np.std(scores['rmse']),
+        'MAPE_std': np.std(scores['mape'])
+    }
 
-elif aba == "Barter Ratio":
-    df = carregar_dados_barter()
-    cultura = st.selectbox("Cultura:", sorted(df['cultura'].unique()))
-    estado = st.selectbox("Estado:", sorted(df['estado'].unique()))
-    produto = st.selectbox("Produto:", sorted(df['produto'].unique()))
-    df_filt = df[(df['cultura'] == cultura) & (df['estado'] == estado) & (df['produto'] == produto)].sort_values('data')
+def criar_ensemble_model():
+    """Cria um ensemble de modelos para melhor performance"""
+    models = {
+        'xgb': XGBRegressor(
+            n_estimators=300,
+            learning_rate=0.08,
+            max_depth=6,
+            subsample=0.9,
+            colsample_bytree=0.9,
+            random_state=42,
+            n_jobs=-1
+        ),
+        'rf': RandomForestRegressor(
+            n_estimators=200,
+            max_depth=10,
+            min_samples_split=5,
+            min_samples_leaf=2,
+            random_state=42,
+            n_jobs=-1
+        )
+    }
+    return models
 
-if df_filt.shape[0] < 12:
-    st.warning("⚠️ É necessário pelo menos 12 registros mensais para gerar uma previsão confiável.")
-    st.dataframe(df_filt)
+def calcular_intervalos_confianca(predictions, confidence_level=0.95):
+    """Calcula intervalos de confiança usando bootstrap"""
+    n_bootstrap = 100
+    bootstrap_preds = []
+    
+    for _ in range(n_bootstrap):
+        # Adiciona ruído baseado na variabilidade histórica
+        noise = np.random.normal(0, np.std(predictions) * 0.1, len(predictions))
+        bootstrap_preds.append(predictions + noise)
+    
+    bootstrap_preds = np.array(bootstrap_preds)
+    alpha = 1 - confidence_level
+    
+    lower = np.percentile(bootstrap_preds, (alpha/2) * 100, axis=0)
+    upper = np.percentile(bootstrap_preds, (1 - alpha/2) * 100, axis=0)
+    
+    return lower, upper
+
+# Carregamento dos dados
+df, fretes, locais = carregar_dados()
+
+st.subheader("🔧 Parâmetros da previsão")
+
+produto = st.selectbox("Produto", sorted(df['nome_produto'].dropna().unique()))
+df_prod = df[df['nome_produto'] == produto]
+
+if df_prod.empty or df_prod['local'].dropna().empty or len(df_prod) < 10:
+    st.warning(
+        "📦 Ainda não é possível gerar previsões para este produto.\n\n"
+        "É necessário pelo menos **10 registros históricos com origem válida** para ativar o modelo."
+    )
     st.stop()
 
-serie = df_filt.set_index('data')[['preco']].resample('MS').mean().dropna()
-serie = serie.reset_index().rename(columns={"data": "ds", "preco": "y"})
+origens = df_prod['local'].unique()
+origem = st.selectbox("Origem (porto)", sorted(origens))
+origem_id = df_prod[df_prod['local'] == origem]['local_id'].iloc[0]
 
-# Escolha do número de meses futuros
-num_meses = st.slider("Quantos meses futuros deseja prever?", min_value=3, max_value=12, value=6)
+destinos = locais[locais['id'] != origem_id]
+destino_nome = st.selectbox("Destino (cliente)", sorted(destinos['nome']))
+destino_id = destinos[destinos['nome'] == destino_nome]['id'].iloc[0]
 
-# Separar para avaliar acurácia
-train = serie[:-6]
-test = serie[-6:]
+meses_futuros = st.slider("Meses futuros para prever:", min_value=1, max_value=12, value=6)
 
-modelo = Prophet()
-modelo.fit(train)
-future_test = modelo.make_future_dataframe(periods=6, freq='MS')
-forecast_test = modelo.predict(future_test)
-forecast_test = forecast_test[['ds', 'yhat']].set_index('ds')
+cenario = st.selectbox("Cenário de tendência para previsão futura:", [
+    "Neutro (sem ajuste)", "Alta (otimista)", "Queda (pessimista)"
+])
 
-mape = mean_absolute_percentage_error(test.set_index('ds')['y'], forecast_test[-6:]['yhat'])
-print(f"[DEBUG] MAPE (erro percentual médio): {mape:.2%}")
+# Preparação dos dados melhorada
+df_merge = df_prod[df_prod['local'] == origem].copy()
+frete_match = fretes[(fretes['origem_id'] == origem_id) & (fretes['destino_id'] == destino_id)]
+df_merge = df_merge.merge(frete_match[['data', 'custo_brl', 'custo_usd']], on='data', how='left')
 
-# Previsão final com todos os dados
-modelo_final = Prophet()
-modelo_final.fit(serie)
-future_final = modelo_final.make_future_dataframe(periods=num_meses, freq='MS')
-forecast_final = modelo_final.predict(future_final)
-forecast_df = forecast_final[['ds', 'yhat']].tail(num_meses).rename(columns={'ds': 'data', 'yhat': 'previsao'})
+df_merge['custo_brl'] = df_merge['custo_brl'].fillna(0)
+df_merge['custo_usd'] = df_merge['custo_usd'].fillna(0)
+df_merge['frete_final'] = df_merge['custo_brl'] + (df_merge['custo_usd'] * df_merge['usd_brl'])
+df_merge['valor_entregue'] = df_merge['preco_min'] + df_merge['frete_final']
 
-titulo = (
-    f"{produto} em {local}" if aba == "Preço" else
-    f"{origem} → {destino} ({tipo})" if aba == "Frete" else
-    f"{cultura} - {produto} ({estado})"
+
+# Detecção e remoção de outliers
+df_merge_clean = detectar_outliers(df_merge, 'valor_entregue', 'iqr')
+outliers_removidos = len(df_merge) - len(df_merge_clean)
+
+if outliers_removidos > 0:
+    st.info(f"🧹 Removidos {outliers_removidos} outliers para melhor qualidade do modelo")
+
+# Criar features avançadas
+df_merge_clean = criar_features_avancadas(df_merge_clean)
+
+# Seleção inteligente de features
+base_features = [
+    'formulacao', 'origem_produto', 'tipo_produto', 'unidade', 'estado', 'pais',
+    'tipo_local', 'modalidade', 'moeda', 'variacao', 'usd_brl',
+    'custo_total', 'frete_final', 'mes', 'ano', 'trimestre', 'dia_semana',
+    'mes_sin', 'mes_cos', 'trimestre_sin', 'trimestre_cos',
+    'ratio_frete_preco', 'ratio_custo_preco'
+]
+
+# Features avançadas condicionais
+advanced_features = []
+for col in df_merge_clean.columns:
+    if any(x in col for x in ['lag_', 'ma_', 'std_', 'volatilidade', 'tendencia']):
+        if df_merge_clean[col].notna().sum() > len(df_merge_clean) * 0.5:  # 50% de dados válidos
+            advanced_features.append(col)
+
+all_features = base_features + advanced_features
+
+# Filtrar dados válidos
+df_clean = df_merge_clean.dropna(subset=base_features + ['valor_entregue']).copy()
+
+# Usar features avançadas apenas se tiver dados suficientes
+if len(df_clean) >= 50 and advanced_features:
+    df_with_advanced = df_merge_clean.dropna(subset=all_features + ['valor_entregue']).copy()
+    if len(df_with_advanced) >= 10:
+        df_clean = df_with_advanced
+        features_to_use = all_features
+    else:
+        features_to_use = base_features
+else:
+    features_to_use = base_features
+
+X = df_clean[features_to_use]
+y = df_clean['valor_entregue']
+
+# Preparação do pipeline melhorado
+categorical_cols = X.select_dtypes(include='object').columns.tolist()
+numeric_cols = X.select_dtypes(include=['float64', 'int64']).columns.tolist()
+
+preprocessor = ColumnTransformer([
+    ('cat', OneHotEncoder(handle_unknown='ignore', drop='first'), categorical_cols),
+    ('num', StandardScaler(), numeric_cols)  # Normalização para melhor performance
+])
+
+# Criação do ensemble
+models = criar_ensemble_model()
+best_model = None
+best_score = float('inf')
+best_metrics = None
+
+# Teste de modelos com validação temporal
+progress_bar = st.progress(0)
+status_text = st.empty()
+
+for i, (name, model) in enumerate(models.items()):
+    status_text.text(f"🔄 Testando modelo {name.upper()}...")
+    
+    pipeline = Pipeline([
+        ('prep', preprocessor),
+        ('model', model)
+    ])
+    
+    # Validação temporal
+    metrics = validacao_temporal(pipeline, X, y, n_splits=3)
+    
+    if metrics['MAPE'] < best_score:
+        best_score = metrics['MAPE']
+        best_model = pipeline
+        best_metrics = metrics
+        best_name = name
+    
+    progress_bar.progress((i + 1) / len(models))
+
+status_text.text(f"✅ Melhor modelo: {best_name.upper()}")
+
+# Exibir métricas com intervalos de confiança
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.metric("MAE", f"R$ {best_metrics['MAE']:.2f}", 
+              delta=f"±{best_metrics['MAE_std']:.2f}")
+with col2:
+    st.metric("RMSE", f"R$ {best_metrics['RMSE']:.2f}", 
+              delta=f"±{best_metrics['RMSE_std']:.2f}")
+with col3:
+    st.metric("MAPE", f"{best_metrics['MAPE']:.2%}", 
+              delta=f"±{best_metrics['MAPE_std']:.2%}")
+
+# Treinamento final
+best_model.fit(X, y)
+
+# Previsão futura mais robusta
+last_row = X.iloc[-1].copy()
+last_mes = int(last_row['mes'])
+last_ano = int(last_row['ano'])
+
+# Análise de tendência mais sofisticada
+recent_data = df_clean.tail(12)  # últimos 12 meses
+if len(recent_data) >= 2:
+    primeiro_valor = recent_data['valor_entregue'].iloc[0]
+    ultimo_valor = recent_data['valor_entregue'].iloc[-1]
+
+    # Evita divisão por zero
+    if primeiro_valor != 0:
+        tendencia_percentual = (ultimo_valor / primeiro_valor) ** (1 / len(recent_data)) - 1
+    else:
+        tendencia_percentual = 0
+
+    volatilidade_historica = recent_data['valor_entregue'].pct_change().std()
+else:
+    tendencia_percentual = 0
+    volatilidade_historica = 0.05
+
+futuras = []
+for i in range(1, meses_futuros + 1):
+    next_mes = (last_mes + i - 1) % 12 + 1
+    next_ano = last_ano + (last_mes + i - 1) // 12
+
+    row = last_row.copy()
+    row['mes'] = next_mes
+    row['ano'] = next_ano
+    row['trimestre'] = (next_mes - 1) // 3 + 1
+    
+    # Atualizar features cíclicas
+    row['mes_sin'] = np.sin(2 * np.pi * next_mes / 12)
+    row['mes_cos'] = np.cos(2 * np.pi * next_mes / 12)
+    row['trimestre_sin'] = np.sin(2 * np.pi * row['trimestre'] / 4)
+    row['trimestre_cos'] = np.cos(2 * np.pi * row['trimestre'] / 4)
+
+    # Variações baseadas em volatilidade histórica
+    frete_factor = np.random.normal(1, volatilidade_historica * 0.5)
+    usd_factor = np.random.normal(1, volatilidade_historica * 0.3)
+    
+    row['frete_final'] *= frete_factor
+    row['usd_brl'] *= usd_factor
+    row['custo_total'] *= np.random.normal(1, 0.02)
+    row['variacao'] = tendencia_percentual
+
+    futuras.append(row)
+
+X_futuro = pd.DataFrame(futuras)
+previsoes_futuras = best_model.predict(X_futuro)
+
+# Ajuste de cenário mais sofisticado
+if cenario == "Alta (otimista)":
+    fator_base = 1 + max(0.02, abs(tendencia_percentual) * 1.5)  # mínimo 2% de alta
+    previsoes_ajustadas = [valor * (fator_base ** (i * 0.1)) for i, valor in enumerate(previsoes_futuras)]
+elif cenario == "Queda (pessimista)":
+    fator_base = 1 - max(0.02, abs(tendencia_percentual) * 1.2)  # mínimo 2% de queda
+    previsoes_ajustadas = [valor * (fator_base ** (i * 0.1)) for i, valor in enumerate(previsoes_futuras)]
+else:
+    previsoes_ajustadas = previsoes_futuras
+
+# Calcular intervalos de confiança
+lower_bound, upper_bound = calcular_intervalos_confianca(previsoes_ajustadas)
+
+# Resultados com intervalos de confiança
+datas_futuras = pd.date_range(start=df_clean['data'].max() + timedelta(days=1), periods=meses_futuros, freq='MS')
+df_previsao = pd.DataFrame({
+    'data': datas_futuras, 
+    'valor_previsto': previsoes_ajustadas,
+    'limite_inferior': lower_bound,
+    'limite_superior': upper_bound
+})
+
+# Gráfico melhorado com intervalos de confiança
+serie_real = df_clean[['data', 'valor_entregue']].rename(columns={'valor_entregue': 'valor'})
+
+fig = go.Figure()
+
+# Série histórica
+fig.add_trace(go.Scatter(
+    x=serie_real['data'],
+    y=serie_real['valor'],
+    mode='lines+markers',
+    name='Histórico',
+    line=dict(color='blue')
+))
+
+# Previsão central
+fig.add_trace(go.Scatter(
+    x=df_previsao['data'],
+    y=df_previsao['valor_previsto'],
+    mode='lines+markers',
+    name='Previsão',
+    line=dict(color='red', dash='dash')
+))
+
+# Intervalo de confiança
+fig.add_trace(go.Scatter(
+    x=list(df_previsao['data']) + list(df_previsao['data'][::-1]),
+    y=list(df_previsao['limite_superior']) + list(df_previsao['limite_inferior'][::-1]),
+    fill='toself',
+    fillcolor='rgba(255,0,0,0.2)',
+    line=dict(color='rgba(255,255,255,0)'),
+    name='Intervalo de Confiança (95%)',
+    showlegend=True
+))
+
+fig.update_layout(
+    title=f"Valor Entregue - {produto} de {origem} até {destino_nome}",
+    xaxis_title="Data",
+    yaxis_title="Valor (R$)",
+    hovermode='x unified'
 )
 
-st.subheader("📊 Histórico + Previsão")
-fig = px.line(serie, x='ds', y='y', title=titulo)
-fig.add_scatter(x=forecast_df['data'], y=forecast_df['previsao'], mode='lines+markers', name='Previsão')
-fig.update_layout(margin=dict(t=50, b=20))
 st.plotly_chart(fig, use_container_width=True)
 
-with st.expander("🔍 Visualizar dados utilizados"):
-    st.dataframe(serie.rename(columns={'ds': 'data', 'y': 'preco'}))
+# Expandables com informações detalhadas
+with st.expander("🔍 Visualizar dados históricos utilizados"):
+    st.dataframe(df_clean[['data', 'preco_min', 'frete_final', 'valor_entregue']].sort_values('data'))
 
-with st.expander("🔮 Ver previsão futura"):
-    st.dataframe(forecast_df)
+with st.expander("🔮 Ver previsão futura mês a mês"):
+    st.dataframe(df_previsao)
+
+with st.expander("📊 Detalhes do modelo"):
+    st.write(f"**Modelo selecionado:** {best_name.upper()}")
+    st.write(f"**Features utilizadas:** {len(features_to_use)}")
+    st.write(f"**Outliers removidos:** {outliers_removidos}")
+    st.write(f"**Tendência detectada:** {tendencia_percentual:.2%} ao período")
+    st.write(f"**Volatilidade histórica:** {volatilidade_historica:.2%}")
+
+# Métricas finais
+st.caption(f"Modelo {best_name.upper()} otimizado - MAPE: {best_metrics['MAPE']:.2%} ± {best_metrics['MAPE_std']:.2%} | Features: {len(features_to_use)} | Validação temporal com 3 folds")

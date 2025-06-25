@@ -1,18 +1,37 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime
 from processar_relatorio import processar_relatorio
 import threading  
 import time        
-from streamlit_autorefresh import st_autorefresh
 from database_utils import salvar_preco_manual, salvar_frete_manual
 import os
 from uuid import uuid4  # coloque no início do arquivo, se ainda não estiver
 import threading
 import json
+import shutil
+import statsmodels.api as sm
+import glob
+from sqlalchemy import create_engine, text
+from dotenv import load_dotenv
+
+# Load .env
+load_dotenv()
+DATABASE_URL = os.getenv("DATABASE_URL")
+engine = create_engine(DATABASE_URL)
+
+st.set_page_config(
+    page_title="Dashboard Morro Verde",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        'About': None,
+        'Get Help': None,
+        'Report a bug': None
+    }
+)
 
 def ler_progresso_do_arquivo():
     try:
@@ -31,16 +50,6 @@ def atualizar_progresso_seguro(p):
         progresso_compartilhado["valor"] = p
 
 
-st.set_page_config(
-    page_title="Dashboard Morro Verde",
-    layout="wide",
-    initial_sidebar_state="expanded",
-    menu_items={
-        'About': None,
-        'Get Help': None,
-        'Report a bug': None
-    }
-)
 
 # Esconde o seletor de páginas padrão
 hide_pages = """
@@ -53,38 +62,150 @@ hide_pages = """
 st.markdown(hide_pages, unsafe_allow_html=True)
 
 
-DB_PATH = 'morro_verde.db'
+DB_PATH = os.path.join(os.path.dirname(__file__), 'morro_verde.db')
 logo_path = "img/logo-morro-verde.png"
 
 
-def criar_conexao():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute('PRAGMA foreign_keys = ON')
-    return conn
-
 def carregar_dados():
-    conn = criar_conexao()
     df_precos = pd.read_sql_query('''
         SELECT p.nome_produto AS produto, l.nome AS localizacao, pr.data AS data_preco, pr.preco_min AS preco, pr.moeda
         FROM precos pr
         JOIN produtos p ON p.id = pr.produto_id
         JOIN locais l ON l.id = pr.local_id
-    ''', conn)
+    ''', engine)
 
     df_fretes = pd.read_sql_query('''
-        SELECT l1.nome AS origem, l2.nome AS destino, f.tipo AS tipo_transporte, f.custo_usd AS preco, "USD" AS moeda, f.data
+        SELECT l1.nome AS origem, l2.nome AS destino, f.tipo AS tipo_transporte, f.custo_usd AS preco, 'USD' AS moeda, f.data
         FROM fretes f
         JOIN locais l1 ON f.origem_id = l1.id
         JOIN locais l2 ON f.destino_id = l2.id
-    ''', conn)
+    ''', engine)
 
     df_barter = pd.read_sql_query('''
         SELECT cultura, produto_id, estado, data, preco_cultura, barter_ratio AS razao_barter
         FROM barter_ratios
-    ''', conn)
+    ''', engine)
 
-    conn.close()
     return df_precos, df_fretes, df_barter
+
+
+def criar_backup(max_backups=5):
+    os.makedirs("backups_csv", exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_folder = f"backups_csv/backup_{timestamp}"
+    os.makedirs(backup_folder, exist_ok=True)
+
+    try:
+        with engine.connect() as connection:
+            # Exportar produtos
+            df_produtos = pd.read_sql("SELECT * FROM produtos", connection)
+            df_produtos.to_csv(f"{backup_folder}/produtos.csv", index=False)
+
+            # Exportar locais
+            df_locais = pd.read_sql("SELECT * FROM locais", connection)
+            df_locais.to_csv(f"{backup_folder}/locais.csv", index=False)
+
+            # Exportar precos
+            df_precos = pd.read_sql("SELECT * FROM precos", connection)
+            df_precos.to_csv(f"{backup_folder}/precos.csv", index=False)
+
+            # Exportar fretes
+            df_fretes = pd.read_sql("SELECT * FROM fretes", connection)
+            df_fretes.to_csv(f"{backup_folder}/fretes.csv", index=False)
+
+            # Exportar barter_ratios
+            df_barter = pd.read_sql("SELECT * FROM barter_ratios", connection)
+            df_barter.to_csv(f"{backup_folder}/barter_ratios.csv", index=False)
+
+            # Exportar cambio
+            df_cambio = pd.read_sql("SELECT * FROM cambio", connection)
+            df_cambio.to_csv(f"{backup_folder}/cambio.csv", index=False)
+
+            # Exportar custos_portos
+            df_custo_portos = pd.read_sql("SELECT * FROM custos_portos", connection)
+            df_custo_portos.to_csv(f"{backup_folder}/custos_portos.csv", index=False)
+
+        # Limpeza: mantém só os N mais recentes
+        backups = sorted(
+            glob.glob("backups_csv/backup_*"),
+            key=lambda x: os.path.getmtime(x)
+        )
+
+        while len(backups) > max_backups:
+            shutil.rmtree(backups[0])
+            backups.pop(0)
+
+        print(f"✅ Backup COMPLETO criado em {backup_folder}")
+
+    except Exception as e:
+        print(f"❌ Erro ao criar backup: {e}")
+        
+def restaurar_backup_mais_recente():
+    backups = sorted(
+        glob.glob("backups_csv/backup_*"),
+        key=lambda x: os.path.getmtime(x)
+    )
+
+    if not backups:
+        return False
+
+    mais_recente = backups[-1]
+
+    try:
+        with engine.begin() as connection:
+            # Limpar tabelas (modo seguro - respeita FK)
+            connection.execute(text("DELETE FROM precos"))
+            connection.execute(text("DELETE FROM fretes"))
+            connection.execute(text("DELETE FROM barter_ratios"))
+            connection.execute(text("DELETE FROM cambio"))
+            connection.execute(text("DELETE FROM custos_portos"))
+            connection.execute(text("DELETE FROM produtos"))
+            connection.execute(text("DELETE FROM locais"))
+
+            # Restaurar produtos
+            df_produtos = pd.read_csv(f"{mais_recente}/produtos.csv")
+            df_produtos.to_sql("produtos", connection, if_exists="append", index=False)
+
+            # Restaurar locais
+            df_locais = pd.read_csv(f"{mais_recente}/locais.csv")
+            df_locais.to_sql("locais", connection, if_exists="append", index=False)
+
+            # Restaurar precos
+            df_precos = pd.read_csv(f"{mais_recente}/precos.csv")
+            df_precos.to_sql("precos", connection, if_exists="append", index=False)
+
+            # Restaurar fretes
+            df_fretes = pd.read_csv(f"{mais_recente}/fretes.csv")
+            df_fretes.to_sql("fretes", connection, if_exists="append", index=False)
+
+            # Restaurar barter_ratios
+            df_barter = pd.read_csv(f"{mais_recente}/barter_ratios.csv")
+            df_barter.to_sql("barter_ratios", connection, if_exists="append", index=False)
+
+            # Restaurar cambio
+            df_cambio = pd.read_csv(f"{mais_recente}/cambio.csv")
+            df_cambio.to_sql("cambio", connection, if_exists="append", index=False)
+
+            # Restaurar custos_portos
+            df_custo_portos = pd.read_csv(f"{mais_recente}/custos_portos.csv")
+            df_custo_portos.to_sql("custos_portos", connection, if_exists="append", index=False)
+
+        print(f"✅ Backup COMPLETO restaurado de {mais_recente}")
+        return True
+
+    except Exception as e:
+        print(f"❌ Erro ao restaurar backup: {e}")
+        return False
+
+def registrar_acao(descricao):
+    log = []
+    if os.path.exists("acoes_realizadas.json"):
+        with open("acoes_realizadas.json", "r") as f:
+            log = json.load(f)
+    log.append(descricao)
+    with open("acoes_realizadas.json", "w") as f:
+        json.dump(log, f)
 
 
 # Inicializar session state
@@ -104,18 +225,13 @@ if 'erro_processamento' not in st.session_state:
     st.session_state.erro_processamento = None
 
 def threaded_processar_relatorio(caminho_pdf, num_partes):
-    # Marca que o processamento começou
-    st.session_state.relatorio_em_processamento = True
-    st.session_state.processamento_concluido = False
-    st.session_state.erro_processamento = None
-    st.session_state.progresso_relatorio = 0
-
     def executar_processamento():
         try:
-            # Função principal de processamento, com callback para progresso
+            # Callback que atualiza o progresso
             def progresso_callback(p):
                 st.session_state.progresso_relatorio = p
 
+            # Processa o relatório
             processar_relatorio(
                 caminho_pdf,
                 callback_progresso=progresso_callback,
@@ -127,12 +243,14 @@ def threaded_processar_relatorio(caminho_pdf, num_partes):
             st.session_state.erro_processamento = str(e)
         finally:
             st.session_state.relatorio_em_processamento = False
-            st.session_state.progresso_relatorio = 100  # Garante que a barra encha visualmente
+            st.session_state.progresso_relatorio = 100  # Garantir visualmente
 
-    # Executa o processamento em thread
-    thread = threading.Thread(target=executar_processamento)
+    # Cria e armazena a thread
+    thread = threading.Thread(target=executar_processamento, daemon=True)
     thread.start()
 
+    # ⚠️ Muito importante: guarde a thread no session_state
+    st.session_state.thread = thread
 
 # Função para input manual de dados
 def mostrar_formulario_input():
@@ -170,20 +288,22 @@ def mostrar_formulario_input():
                 st.error("❌ Preencha todos os campos obrigatórios de preço: Produto, Localização e Preço > 0")
                 return
             
+            criar_backup()
+
             # Salvar preço
             sucesso_preco, msg_preco = salvar_preco_manual(produto, localizacao, preco, moeda, data_preco)
-            
+
             if submitted_completo:
                 # Validação para frete também
                 if not origem or not destino or custo_frete <= 0:
                     st.error("❌ Para salvar frete também, preencha: Origem, Destino e Custo > 0")
                     return
-                    
+
                 sucesso_frete, msg_frete = salvar_frete_manual(origem, destino, custo_frete, "USD", data_frete)
-                
+
                 if sucesso_preco and sucesso_frete:
                     st.success("✅ Preço e Frete salvos com sucesso!")
-                    
+                    registrar_acao("✍️ Novo dado inputado manualmente: preço e frete.")
                 else:
                     if not sucesso_preco:
                         st.error(f"❌ Erro ao salvar preço: {msg_preco}")
@@ -192,9 +312,10 @@ def mostrar_formulario_input():
             else:
                 if sucesso_preco:
                     st.success("✅ Preço salvo com sucesso!")
-                    
+                    registrar_acao("✍️ Novo dado inputado manualmente: apenas preço.")
                 else:
                     st.error(f"❌ Erro ao salvar preço: {msg_preco}")
+
 
             time.sleep(2)
             st.rerun()
@@ -248,24 +369,25 @@ with col2:
     if st.button("📥 IMPORTAR RELATÓRIO", use_container_width=True) and uploaded_file is not None:
         os.makedirs("relatorios", exist_ok=True)
         caminho_pdf = "relatorios/relatorio_temp.pdf"
-        
+
         with open(caminho_pdf, "wb") as f:
             f.write(uploaded_file.getbuffer())
 
-        # 🔄 Limpa o progresso anterior (caso exista)
+        criar_backup()  # Backup antes de processar
+        registrar_acao(f"📄 {uploaded_file.name} importado!")
+
+        # Limpa progresso anterior
         if os.path.exists("progresso.json"):
             os.remove("progresso.json")
 
-        # Sempre crie nova thread ao importar, mesmo que seja o mesmo arquivo
-        nova_thread = threading.Thread(target=threaded_processar_relatorio, args=(caminho_pdf, num_partes))
-        nova_thread.start()
+        # Chama a função de processar com thread já armazenada
+        threaded_processar_relatorio(caminho_pdf, num_partes)
 
-        # ⚠️ Atualize o session_state corretamente
+        # Atualiza session_state
         st.session_state.relatorio_em_processamento = True
         st.session_state.processamento_concluido = False
         st.session_state.erro_processamento = None
         st.session_state.progresso_relatorio = 0
-        st.session_state.thread = nova_thread
 
 
 with col3:
@@ -273,28 +395,34 @@ with col3:
         st.session_state.dados_inseridos = not st.session_state.dados_inseridos
         st.rerun()
 
-# ============ STATUS DO PROCESSAMENTO ============
+# ============ STATUS DO PROCESSAMENTO (com update leve, sem travar) ============
 
 if st.session_state.get("relatorio_em_processamento", False):
-    st_autorefresh(interval=2000, limit=100, key="refresh_durante_processamento")
+    progresso_bar = st.progress(0)
+    mensagem_box = st.empty()
 
-    progresso, mensagem = ler_progresso_do_arquivo()
-    st.progress(progresso / 100)
-    st.write(f"**Progresso: {progresso}%**")
-    if mensagem:
-        st.info(mensagem)
+    while True:
+        progresso, mensagem = ler_progresso_do_arquivo()
+        progresso_bar.progress(progresso / 100)
+        mensagem_box.write(f"**Progresso: {progresso}%**")
+        if mensagem:
+            mensagem_box.info(mensagem)
 
-    if progresso == 100 and not st.session_state.thread.is_alive():
-        st.session_state.relatorio_em_processamento = False
-        st.session_state.processamento_concluido = True
-        st.rerun()
+        # Se terminou: atualiza estados e dá rerun
+        if progresso >= 100 and not st.session_state.thread.is_alive():
+            st.session_state.relatorio_em_processamento = False
+            st.session_state.processamento_concluido = True
+            st.rerun()
+
+        # Dorme para não sobrecarregar CPU (1 seg tá ótimo)
+        time.sleep(1)
 
 elif st.session_state.get("processamento_concluido", False):
     st.success("✅ Relatório processado com sucesso!")
-    st.info("🔄 Atualize a página para ver as mudanças nos gráficos e dados.")
 
 elif st.session_state.get("erro_processamento"):
     st.error(f"❌ Erro no processamento: {st.session_state.erro_processamento}")
+
 
 # Mostrar formulário de input se solicitado
 if st.session_state.dados_inseridos:
@@ -314,7 +442,7 @@ if df_precos.empty and df_fretes.empty:
     st.markdown("""
     - Use o botão **📝 INPUTAR DADOS** para adicionar dados manualmente
     - Use o botão **📥 IMPORTAR RELATÓRIO** para processar um PDF
-    - Verifique se o banco de dados foi criado corretamente
+    - Em "Partes", considere que quanto maior o relatório, mais partes você deve dividi-lo para evitar erros de processamento.
     """)
     st.stop()
 
@@ -582,7 +710,6 @@ else:
 # Análise Sazonal (melhorada)
 st.subheader("📅 Análise Sazonal dos Preços")
 try:
-    import statsmodels.api as sm
     
     ts_data = df_precos_filt.copy()
     ts_data['ano_mes'] = ts_data['data_preco'].dt.to_period('M')
@@ -684,6 +811,33 @@ with col_tab2:
     else:
         st.info("Nenhum dado de fretes disponível.")
 
-# Rodapé
+# Rodapé visual
 st.markdown("---")
 st.markdown("**Dashboard Morro Verde** - Análise de Concorrência | Dados atualizados em tempo real")
+
+# Seção de Desfazer e Histórico de Ações
+st.markdown("---")
+st.markdown("### ⏪ Deseja desfazer a última atualização?")
+
+if os.path.exists("backups_csv"):
+    if st.button("Desfazer Última Atualização", use_container_width=True):
+        if restaurar_backup_mais_recente():
+            if os.path.exists("acoes_realizadas.json"):
+                with open("acoes_realizadas.json", "r") as f:
+                    log = json.load(f)
+                if log:
+                    log.pop()  # Remove a última ação do histórico
+                    with open("acoes_realizadas.json", "w") as f:
+                        json.dump(log, f)
+            st.success("✅ Banco de dados restaurado com sucesso!")
+            st.rerun()
+
+if os.path.exists("acoes_realizadas.json"):
+    with open("acoes_realizadas.json", "r") as f:
+        acoes = json.load(f)
+    if acoes:
+        st.markdown("#### 📚 Histórico de alterações no banco:")
+        for acao in reversed(acoes[-5:]):
+            st.markdown(f"- {acao}")
+
+
